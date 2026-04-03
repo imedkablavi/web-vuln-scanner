@@ -1,0 +1,17 @@
+workflow_id: partial_auth_workflow
+title: Partial workflow due to failed actor readiness
+description: Broken actor cannot authenticate, so the workflow must remain partial rather than being reported as completed.
+enabled: true
+replayable: false
+actors:
+  - broken_user
+actor_sequence:
+  - broken_user
+steps:
+  - step_id: ensure_broken_ready
+    step_type: ensure_actor_ready
+    actor_id: broken_user
+  - step_id: attempt_dashboard_visit
+    step_type: visit_url
+    actor_id: broken_user
+    target: /dashboard

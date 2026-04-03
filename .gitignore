@@ -1,0 +1,37 @@
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.env.*
+*.local
+
+# Local editor files
+.vscode/
+.idea/
+
+# Runtime output
+*.log
+scanner.log
+smoke_out/
+reports/
+reports_*/
+security_best_practices_report.md
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# Test and CI-only files
+tests/
+e2e/
+.github/workflows/
+playwright.config.js
+package.json
+package-lock.json

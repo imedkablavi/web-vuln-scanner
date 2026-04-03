@@ -1,0 +1,50 @@
+rbac_matrix:
+  - resource_id: auth_safe_doc_1
+    route: /auth_safe
+    method: GET
+    params:
+      doc: "1"
+    expectations:
+      low_user: allow_owned
+      peer_user: deny
+      admin_user: allow
+      anonymous: deny
+    ownership:
+      owner_actor_id: low_user
+      resource_parameter: doc
+      ownership_type: row_level
+    masked_markers: []
+
+  - resource_id: auth_bypass_doc_1
+    route: /auth_bypass
+    method: GET
+    params:
+      doc: "1"
+    expectations:
+      low_user: allow_owned
+      peer_user: deny
+      admin_user: allow
+      anonymous: deny
+    ownership:
+      owner_actor_id: low_user
+      resource_parameter: doc
+      ownership_type: row_level
+    masked_markers: []
+
+  - resource_id: auth_masked_doc_1
+    route: /auth_masked
+    method: GET
+    params:
+      doc: "1"
+    expectations:
+      low_user: allow_owned
+      peer_user: masked
+      admin_user: allow
+      anonymous: deny
+    ownership:
+      owner_actor_id: low_user
+      resource_parameter: doc
+      ownership_type: row_level
+    masked_markers:
+      - redacted
+      - masked@example.test

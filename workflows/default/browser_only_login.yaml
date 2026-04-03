@@ -1,0 +1,26 @@
+workflow_id: browser_only_login
+title: Browser-only login workflow
+description: Browser-authenticated actor reaches the SPA dashboard and captures browser-scoped artifacts.
+enabled: true
+replayable: false
+actors:
+  - peer_user
+actor_sequence:
+  - peer_user
+steps:
+  - step_id: ensure_peer_ready
+    step_type: ensure_actor_ready
+    actor_id: peer_user
+  - step_id: visit_spa_dashboard
+    step_type: visit_url
+    actor_id: peer_user
+    target: /spa-dashboard
+    use_browser: true
+    checkpoints:
+      - checkpoint_id: spa_dashboard_contains_actor
+        checkpoint_type: assert_text
+        expected: "Actor: peer_user"
+  - step_id: capture_spa_dashboard
+    step_type: capture_screenshot
+    actor_id: peer_user
+    use_browser: true

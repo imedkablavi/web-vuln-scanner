@@ -1,0 +1,30 @@
+workflow_id: peer_access_policy
+title: Peer actor policy-backed access check
+description: Low actor opens a resource, then peer actor opens the same resource and policy-backed verification confirms the observed outcome.
+enabled: true
+replayable: true
+actors:
+  - low_user
+  - peer_user
+actor_sequence:
+  - low_user
+  - peer_user
+steps:
+  - step_id: ensure_low_ready
+    step_type: ensure_actor_ready
+    actor_id: low_user
+  - step_id: low_open_owned_bypass
+    step_type: visit_url
+    actor_id: low_user
+    target: /auth_bypass?doc=1
+  - step_id: switch_to_peer
+    step_type: switch_actor
+    actor_id: peer_user
+  - step_id: peer_open_same_resource
+    step_type: visit_url
+    actor_id: peer_user
+    target: /auth_bypass?doc=1
+    checkpoints:
+      - checkpoint_id: peer_policy_verdict
+        checkpoint_type: assert_policy_outcome
+        expected: deny
