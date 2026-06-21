@@ -1,128 +1,72 @@
-# Web Vulnerability Scanner
+# Web Vuln Scanner
 
-Command-line scanner for authorized web targets.
+Command-line web vulnerability scanner for authorized targets
 
-It can crawl pages, inspect forms and query parameters, check common web posture issues, look for exposed files, inspect Swagger/GraphQL endpoints, record DNS/TLS details, run SQLi checks, and verify some access-control cases when actor accounts are configured.
+## Features
 
-## What It Does
+- Project documentation is present under `docs/`.
+- Dockerfile is included for container-based workflows.
 
-- Crawls in-scope pages and forms over HTTP.
-- Optionally uses Playwright for browser-assisted discovery and login flows.
-- Checks web posture issues such as missing headers, weak cookies, permissive CORS, redirects, and verbose errors.
-- Probes a small set of common backup/debug/config file paths.
-- Reads Swagger/OpenAPI and GraphQL exposure when available.
-- Records DNS and TLS inventory.
-- Runs active SQLi checks.
-- Supports auth-aware verification, replay artifacts, and workflow-based checks.
+## Tech Stack
 
-## Before You Start
+- Python
+- Docker
 
-- Use it only on systems you own or are allowed to test.
-- For browser-assisted crawl and browser login, install Playwright and Chromium.
-- Access-control verification needs valid actor credentials in the config or environment.
+## Project Structure
 
-## Setup
-
-```bash
-python -m venv .venv
+```text
+.gitignore
+CHANGELOG.md
+config/
+core/
+Dockerfile
+docs/
+layers/
+main.py
+main_v2.py
+plugins/
+policies/
+README.md
+requirements.txt
+SECURITY.md
 ```
 
-Windows:
+## Installation
 
 ```bash
-.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
 ```
 
-macOS / Linux:
+## Development
 
-```bash
-source .venv/bin/activate
-```
+- Run the project entry point documented in the source files.
 
-Install Python dependencies:
+## Build
 
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-If you want browser-assisted crawling or browser login:
-
-```bash
-pip install playwright
-playwright install chromium
-```
-
-## Quick Local Check
-
-The easiest way to try the project is the bundled mock target:
-
-```bash
-python smoke/run_smoke.py
-```
-
-This command:
-
-- starts the local mock server
-- runs a full scan against it
-- writes output into `smoke_out/`
-
-After it finishes, open:
-
-- `smoke_out/scan_report.html`
-- `smoke_out/scan_report.json`
-
-## Run a Scan
-
-Basic scan:
-
-```bash
-python main_v2.py scan https://target.tld --config config/default_config.yaml --output reports
-```
-
-With extra API endpoints:
-
-```bash
-python main_v2.py scan https://target.tld --config config/default_config.yaml --swagger https://target.tld/openapi.json --graphql https://target.tld/graphql --output reports
-```
-
-With debug logging:
-
-```bash
-python main_v2.py scan https://target.tld --config config/default_config.yaml --output reports --debug
-```
-
-## Output
-
-Each run writes two files in the output directory:
-
-- `scan_report.json`
-- `scan_report.html`
-
-The JSON report keeps the full data.
-The HTML report is easier to review quickly in a browser.
-
-## Exit Codes
-
-- `0` no reportable findings
-- `1` findings were produced
-- `2` runtime or configuration failure
-- `3` partial or aborted run
+No build command was detected from tracked files.
 
 ## Tests
 
-Run the Python test suite:
+No test command was detected from tracked files.
 
-```bash
-python -m pytest
-```
+## Environment Variables
 
-## Notes
+Use `.env.example` as the starting point when environment variables are required. Keep real secrets out of git.
 
-- Browser-assisted discovery helps coverage, but it is not a full browser spider.
-- Complex auth flows like MFA, SSO, or captcha are not handled.
-- Experimental plugins are disabled by default:
-  - `xss_reflected`
-  - `lfi`
-  - `cmd_injection`
-  - `open_redirect`
+- No required environment variables were detected from tracked files.
+
+## Status
+
+- README generated from the current repository files.
+- Runtime behavior should be verified in the target environment before production use.
+
+## Roadmap / TODO
+
+- Keep this README aligned with future code changes.
+- Add setup notes for deployment environments when they are finalized.
+- Add or expand automated tests when project behavior is stable.
+
+## Author
+
+Author: iEmmAd / cybrex  
+GitHub: [imedkablavi](https://github.com/imedkablavi)
