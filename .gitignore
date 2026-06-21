@@ -35,3 +35,22 @@ e2e/
 playwright.config.js
 package.json
 package-lock.json
+
+# Local secrets and generated files
+!.env.example
+*.pem
+*.key
+id_rsa
+id_ed25519
+credentials.json
+token.json
+secrets.json
+serviceAccount*.json
+firebase-adminsdk*.json
+.next/
+dist/
+build/
+coverage/
+**pycache**/
+venv/
+.DS_Store
