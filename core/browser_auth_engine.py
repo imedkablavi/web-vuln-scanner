@@ -7,6 +7,8 @@ from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 from .models import AuthActor, SessionMaterial
+from .scope import ScopePolicy
+from .utils import logger
 
 
 class BrowserAuthEngine:
@@ -14,9 +16,50 @@ class BrowserAuthEngine:
         self.config = config
         self.artifact_store = artifact_store
         self.event_bus = event_bus
+        self.scope_policy = ScopePolicy(config)
         output_dir = config.get("output", {}).get("directory", "reports")
         self.artifacts_dir = os.path.join(output_dir, "browser_auth_artifacts")
-        os.makedirs(self.artifacts_dir, exist_ok=True)
+        os.makedirs(self.artifacts_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self.artifacts_dir, 0o700)
+        except OSError:
+            pass
+        self.blocked_requests: List[str] = []
+
+    @staticmethod
+    def _secure_file(path: str) -> None:
+        if not path:
+            return
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    async def _install_scope_routing(self, context) -> None:
+        async def _route(route, request):
+            parsed = urlparse(request.url)
+            if parsed.scheme not in {"http", "https"}:
+                await route.continue_()
+                return
+            try:
+                allowed = await asyncio.to_thread(
+                    self.scope_policy.is_allowed,
+                    request.url,
+                    resolve_dns=True,
+                )
+            except Exception:
+                allowed = False
+            if allowed:
+                await route.continue_()
+                return
+            if request.url not in self.blocked_requests:
+                self.blocked_requests.append(request.url)
+            logger.warning(
+                f"Browser authentication request blocked by scope policy: {request.url}"
+            )
+            await route.abort("blockedbyclient")
+
+        await context.route("**/*", _route)
 
     def authenticate_actor(self, actor: AuthActor) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
@@ -28,7 +71,11 @@ class BrowserAuthEngine:
             except Exception as exc:  # pragma: no cover - thread handoff safety
                 error["exc"] = exc
 
-        thread = threading.Thread(target=_runner, name=f"browser-auth-{actor.actor_id}", daemon=True)
+        thread = threading.Thread(
+            target=_runner,
+            name=f"browser-auth-{actor.actor_id}",
+            daemon=True,
+        )
         thread.start()
         thread.join()
         if error:
@@ -39,13 +86,21 @@ class BrowserAuthEngine:
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
-            raise RuntimeError("Playwright is required for browser-driven login. Install it before enabling browser auth.") from exc
+            raise RuntimeError(
+                "Playwright is required for browser-driven login. Install it before "
+                "enabling browser auth."
+            ) from exc
 
         flow = actor.login_flow
         creds = {
-            "username": actor.credentials.username_value or os.getenv(actor.credentials.username_env or "", ""),
-            "password": actor.credentials.password_value or os.getenv(actor.credentials.password_env or "", ""),
+            "username": actor.credentials.username_value
+            or os.getenv(actor.credentials.username_env or "", ""),
+            "password": actor.credentials.password_value
+            or os.getenv(actor.credentials.password_env or "", ""),
         }
+        login_url = flow.browser_login_url or flow.login_url
+        verify_url = flow.verify_url or login_url
+
         if not creds["username"] or not creds["password"]:
             return {
                 "success": False,
@@ -53,38 +108,54 @@ class BrowserAuthEngine:
                 "session_origin": "browser_authenticated_only",
                 "evidence": {
                     "reason": "missing_credentials",
-                    "login_url": flow.browser_login_url or flow.login_url,
+                    "login_url": login_url,
                 },
-                "limitations": ["Browser-driven login credentials were not available from env placeholders or config values."],
+                "limitations": [
+                    "Browser-driven login credentials were not available from env "
+                    "placeholders or config values."
+                ],
             }
 
+        self.scope_policy.require(login_url, resolve_dns=True)
+        if verify_url:
+            self.scope_policy.require(verify_url, resolve_dns=True)
+
         browser_cfg = self.config.get("browser", {})
-        login_url = flow.browser_login_url or flow.login_url
-        verify_url = flow.verify_url or login_url
         headless = bool(browser_cfg.get("headless", True))
         slow_mo = int(browser_cfg.get("slow_mo", 0) or 0)
 
         screenshot_paths: List[str] = []
-        trace_path = os.path.join(self.artifacts_dir, f"{actor.actor_id}-trace.zip")
-        storage_state_path = os.path.join(self.artifacts_dir, f"{actor.actor_id}-storage.json")
+        trace_path = os.path.join(
+            self.artifacts_dir,
+            f"{actor.actor_id}-trace.zip",
+        )
+        storage_state_path = os.path.join(
+            self.artifacts_dir,
+            f"{actor.actor_id}-storage.json",
+        )
         visited_urls: List[str] = []
         response_chain: List[Dict[str, Any]] = []
         limitations: List[str] = []
         material = SessionMaterial()
 
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=headless, slow_mo=slow_mo)
-            context = await browser.new_context(ignore_https_errors=True, user_agent="WebVulnScanner/1.0")
+            browser = await playwright.chromium.launch(
+                headless=headless,
+                slow_mo=slow_mo,
+            )
+            context = await browser.new_context(
+                ignore_https_errors=True,
+                user_agent="WebVulnScanner/1.0",
+                service_workers="block",
+            )
+            await self._install_scope_routing(context)
             await context.tracing.start(screenshots=True, snapshots=True)
             page = await context.new_page()
 
             page.on(
                 "response",
                 lambda resp: response_chain.append(
-                    {
-                        "url": resp.url,
-                        "status": resp.status,
-                    }
+                    {"url": resp.url, "status": resp.status}
                 ),
             )
 
@@ -94,18 +165,36 @@ class BrowserAuthEngine:
                 for selector in flow.pre_submit_click_selectors:
                     await page.click(selector, timeout=2500)
                     await page.wait_for_timeout(250)
-                username_selector = flow.username_selector or f'input[name="{flow.username_field}"]'
-                password_selector = flow.password_selector or f'input[name="{flow.password_field}"]'
-                submit_selector = flow.submit_selector or 'button[type="submit"], input[type="submit"], button'
+
+                username_selector = (
+                    flow.username_selector
+                    or f'input[name="{flow.username_field}"]'
+                )
+                password_selector = (
+                    flow.password_selector
+                    or f'input[name="{flow.password_field}"]'
+                )
+                submit_selector = (
+                    flow.submit_selector
+                    or 'button[type="submit"], input[type="submit"]'
+                )
                 await page.fill(username_selector, creds["username"])
                 await page.fill(password_selector, creds["password"])
-                await self._capture_screenshot(page, actor.actor_id, "before-submit", screenshot_paths)
+                await self._capture_screenshot(
+                    page,
+                    actor.actor_id,
+                    "before-submit",
+                    screenshot_paths,
+                )
                 await page.click(submit_selector, timeout=3500)
                 await page.wait_for_load_state("networkidle")
                 visited_urls.append(page.url)
 
                 if flow.wait_for_url_contains:
-                    await page.wait_for_url(lambda url: flow.wait_for_url_contains in url, timeout=5000)
+                    await page.wait_for_url(
+                        lambda url: flow.wait_for_url_contains in url,
+                        timeout=5000,
+                    )
                     visited_urls.append(page.url)
                 if flow.success_selector:
                     await page.locator(flow.success_selector).wait_for(timeout=5000)
@@ -114,16 +203,34 @@ class BrowserAuthEngine:
                     await page.wait_for_load_state("networkidle")
                     visited_urls.append(page.url)
 
-                matched_success_indicator = await self._matched_indicator(page, flow.success_indicators)
-                matched_failure_indicator = await self._matched_indicator(page, flow.failure_indicators)
+                matched_success_indicator = await self._matched_indicator(
+                    page,
+                    flow.success_indicators,
+                )
+                matched_failure_indicator = await self._matched_indicator(
+                    page,
+                    flow.failure_indicators,
+                )
 
                 verify_response = None
                 if verify_url:
-                    verify_response = await page.goto(verify_url, wait_until="networkidle")
+                    verify_response = await page.goto(
+                        verify_url,
+                        wait_until="networkidle",
+                    )
                     visited_urls.append(page.url)
-                await self._capture_screenshot(page, actor.actor_id, "after-login", screenshot_paths)
+                await self._capture_screenshot(
+                    page,
+                    actor.actor_id,
+                    "after-login",
+                    screenshot_paths,
+                )
                 await context.storage_state(path=storage_state_path)
-                cookies = {item["name"]: item.get("value", "") for item in await context.cookies()}
+                self._secure_file(storage_state_path)
+                cookies = {
+                    item["name"]: item.get("value", "")
+                    for item in await context.cookies()
+                }
                 storage_dump = await page.evaluate(
                     """
                     (keys) => {
@@ -143,17 +250,29 @@ class BrowserAuthEngine:
 
                 access_token = ""
                 refresh_token = ""
-                if flow.auth_headers_template or flow.auth_scheme in {"json_login", "bearer_with_refresh", "static_bearer"}:
+                if flow.auth_headers_template or flow.auth_scheme in {
+                    "json_login",
+                    "bearer_with_refresh",
+                    "static_bearer",
+                }:
                     access_token = (
-                        storage_dump.get("local", {}).get(flow.access_token_json_path)
-                        or storage_dump.get("session", {}).get(flow.access_token_json_path)
+                        storage_dump.get("local", {}).get(
+                            flow.access_token_json_path
+                        )
+                        or storage_dump.get("session", {}).get(
+                            flow.access_token_json_path
+                        )
                         or storage_dump.get("local", {}).get("access_token")
                         or storage_dump.get("session", {}).get("access_token")
                         or ""
                     )
                     refresh_token = (
-                        storage_dump.get("local", {}).get(flow.refresh_token_json_path)
-                        or storage_dump.get("session", {}).get(flow.refresh_token_json_path)
+                        storage_dump.get("local", {}).get(
+                            flow.refresh_token_json_path
+                        )
+                        or storage_dump.get("session", {}).get(
+                            flow.refresh_token_json_path
+                        )
                         or storage_dump.get("local", {}).get("refresh_token")
                         or storage_dump.get("session", {}).get("refresh_token")
                         or ""
@@ -168,22 +287,45 @@ class BrowserAuthEngine:
                     header_template = dict(flow.auth_headers_template or {})
                     if header_template:
                         material.headers = {
-                            key: value.replace("{access_token}", material.access_token).replace("{refresh_token}", material.refresh_token)
+                            key: value.replace(
+                                "{access_token}", material.access_token
+                            ).replace(
+                                "{refresh_token}", material.refresh_token
+                            )
                             for key, value in header_template.items()
                         }
                     if "Authorization" not in material.headers:
-                        material.headers["Authorization"] = f"Bearer {material.access_token}"
+                        material.headers["Authorization"] = (
+                            f"Bearer {material.access_token}"
+                        )
 
-                verify_status = getattr(verify_response, "status", 0) if verify_response is not None else 0
-                verify_ok = bool(verify_response is not None and verify_status < 400 and "login" not in page.url.lower())
+                verify_status = (
+                    getattr(verify_response, "status", 0)
+                    if verify_response is not None
+                    else 0
+                )
+                verify_ok = bool(
+                    verify_response is not None
+                    and verify_status < 400
+                    and "login" not in page.url.lower()
+                )
                 if flow.success_indicators:
                     verify_ok = verify_ok and bool(matched_success_indicator)
                 if matched_failure_indicator:
                     verify_ok = False
-                usable_state = bool(material.cookies or material.access_token or material.storage_state_path)
-                http_handoff_usable = bool(material.cookies or material.access_token)
+                usable_state = bool(
+                    material.cookies
+                    or material.access_token
+                    or material.storage_state_path
+                )
+                http_handoff_usable = bool(
+                    material.cookies or material.access_token
+                )
                 if not http_handoff_usable:
-                    limitations.append("Browser login produced a storage state, but no reusable cookies or bearer token could be handed off to the HTTP layer.")
+                    limitations.append(
+                        "Browser login produced a storage state, but no reusable "
+                        "cookies or bearer token could be handed off to the HTTP layer."
+                    )
 
                 evidence = {
                     "login_url": login_url,
@@ -196,12 +338,16 @@ class BrowserAuthEngine:
                     "cookie_names": sorted(material.cookies.keys()),
                     "storage_state_path": storage_state_path,
                     "browser_storage_keys": flow.browser_storage_keys,
-                    "storage_values": {key: list(value.keys()) for key, value in storage_dump.items()},
+                    "storage_values": {
+                        key: list(value.keys())
+                        for key, value in storage_dump.items()
+                    },
                     "verify_status": verify_status,
                     "usable_state": usable_state,
                     "http_handoff_usable": http_handoff_usable,
                     "screenshots": screenshot_paths,
                     "trace": trace_path,
+                    "blocked_requests": self.blocked_requests[-50:],
                 }
                 if self.event_bus is not None:
                     self.event_bus.emit(
@@ -220,23 +366,45 @@ class BrowserAuthEngine:
                     "material": material,
                     "evidence": evidence,
                     "limitations": limitations,
-                    "session_origin": "browser_login" if http_handoff_usable else "browser_authenticated_only",
+                    "session_origin": (
+                        "browser_login"
+                        if http_handoff_usable
+                        else "browser_authenticated_only"
+                    ),
                 }
             finally:
-                await context.tracing.stop(path=trace_path)
-                if self.artifact_store is not None:
-                    self.artifact_store.register_file("trace", trace_path, actor_id=actor.actor_id, description="Browser login trace")
-                    for screenshot_path in screenshot_paths:
-                        self.artifact_store.register_file("screenshot", screenshot_path, actor_id=actor.actor_id, description="Browser login screenshot")
-                    if os.path.exists(storage_state_path):
-                        self.artifact_store.register_file("storage_state", storage_state_path, actor_id=actor.actor_id, description="Browser login storage state")
-                await context.close()
-                await browser.close()
+                try:
+                    await context.tracing.stop(path=trace_path)
+                    self._secure_file(trace_path)
+                finally:
+                    if self.artifact_store is not None:
+                        if os.path.exists(trace_path):
+                            self.artifact_store.register_file(
+                                "trace",
+                                trace_path,
+                                actor_id=actor.actor_id,
+                                description="Browser login trace",
+                            )
+                        for screenshot_path in screenshot_paths:
+                            self.artifact_store.register_file(
+                                "screenshot",
+                                screenshot_path,
+                                actor_id=actor.actor_id,
+                                description="Browser login screenshot",
+                            )
+                        if os.path.exists(storage_state_path):
+                            self.artifact_store.register_file(
+                                "storage_state",
+                                storage_state_path,
+                                actor_id=actor.actor_id,
+                                description="Browser login storage state",
+                            )
+                    await context.close()
+                    await browser.close()
 
     async def _matched_indicator(self, page, indicators: List[str]) -> str:
         if not indicators:
             return ""
-        body_text = ""
         try:
             body_text = await page.locator("body").inner_text()
         except Exception:
@@ -247,8 +415,18 @@ class BrowserAuthEngine:
                 return indicator
         return ""
 
-    async def _capture_screenshot(self, page, actor_id: str, label: str, bucket: List[str]):
+    async def _capture_screenshot(
+        self,
+        page,
+        actor_id: str,
+        label: str,
+        bucket: List[str],
+    ) -> None:
         safe_host = urlparse(page.url).netloc.replace(":", "-") or "page"
-        path = os.path.join(self.artifacts_dir, f"{actor_id}-{safe_host}-{label}.png")
+        path = os.path.join(
+            self.artifacts_dir,
+            f"{actor_id}-{safe_host}-{label}.png",
+        )
         await page.screenshot(path=path, full_page=True)
+        self._secure_file(path)
         bucket.append(path)
