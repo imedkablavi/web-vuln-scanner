@@ -23,6 +23,14 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "crawler_enabled": True,
         "auth_verification": {"enabled": False},
         "workflows": {"enabled": False},
+        "passive_checks": {
+            "data_exposure": {
+                # Passive/default mode inspects URLs already observed by the
+                # crawler but does not guess sensitive filesystem-like paths.
+                "max_probe_paths": 0,
+                "inspect_observed_urls": True,
+            }
+        },
         "plugins": {
             "sqli": {"enabled": False},
             "business_logic": {"enabled": False},
