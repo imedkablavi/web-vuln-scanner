@@ -12,8 +12,23 @@ from .models import ArtifactReference
 class ArtifactStore:
     def __init__(self, base_dir: str):
         self.base_dir = os.path.abspath(base_dir)
-        os.makedirs(self.base_dir, exist_ok=True)
+        os.makedirs(self.base_dir, mode=0o700, exist_ok=True)
+        self._secure_dir(self.base_dir)
         self._artifacts: List[ArtifactReference] = []
+
+    @staticmethod
+    def _secure_dir(path: str) -> None:
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _secure_file(path: str) -> None:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def _artifact_id(
         self,
@@ -27,7 +42,10 @@ class ArtifactStore:
         checkpoint_id: str = "",
         replay_id: str = "",
     ) -> str:
-        seed = f"{kind}:{os.path.abspath(path)}:{actor_id}:{finding_id}:{workflow_id}:{execution_id}:{step_id}:{checkpoint_id}:{replay_id}"
+        seed = (
+            f"{kind}:{os.path.abspath(path)}:{actor_id}:{finding_id}:"
+            f"{workflow_id}:{execution_id}:{step_id}:{checkpoint_id}:{replay_id}"
+        )
         return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
     def register_file(
@@ -46,10 +64,13 @@ class ArtifactStore:
         description: str = "",
         metadata: Dict[str, Any] | None = None,
     ) -> ArtifactReference:
+        absolute_path = os.path.abspath(path)
+        if os.path.isfile(absolute_path):
+            self._secure_file(absolute_path)
         reference = ArtifactReference(
             artifact_id=self._artifact_id(
                 kind,
-                path,
+                absolute_path,
                 actor_id=actor_id,
                 finding_id=finding_id,
                 workflow_id=workflow_id,
@@ -59,7 +80,7 @@ class ArtifactStore:
                 replay_id=replay_id,
             ),
             kind=kind,
-            path=os.path.abspath(path),
+            path=absolute_path,
             actor_id=actor_id,
             finding_id=finding_id,
             workflow_id=workflow_id,
@@ -91,11 +112,16 @@ class ArtifactStore:
         description: str = "",
     ) -> ArtifactReference:
         directory = os.path.join(self.base_dir, kind)
-        os.makedirs(directory, exist_ok=True)
-        safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in name).strip("-") or kind
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        self._secure_dir(directory)
+        safe_name = "".join(
+            char if char.isalnum() or char in {"-", "_"} else "-"
+            for char in name
+        ).strip("-") or kind
         path = os.path.join(directory, f"{safe_name}.json")
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False)
+        self._secure_file(path)
         return self.register_file(
             kind,
             path,
