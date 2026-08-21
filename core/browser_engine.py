@@ -107,6 +107,7 @@ class BrowserEngine:
         self.context = await self.browser.new_context(
             user_agent="WebVulnScanner/1.0",
             ignore_https_errors=True,
+            service_workers="block",
         )
         await self._install_scope_routing(self.context)
         if self.trace_enabled:
@@ -152,6 +153,7 @@ class BrowserEngine:
         context_kwargs = {
             "ignore_https_errors": True,
             "user_agent": "WebVulnScanner/1.0",
+            "service_workers": "block",
         }
         if actor is None:
             return context_kwargs, {}, []
@@ -215,8 +217,6 @@ class BrowserEngine:
             if interactions.get("scroll", True):
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
 
-            # Discovery is intentionally non-mutating by default. Form
-            # submission and arbitrary clicks require explicit opt-in.
             if self.interactions_enabled and self.submit_forms:
                 await self._interact_with_forms(page)
 
@@ -226,11 +226,11 @@ class BrowserEngine:
                 else []
             )
             actions = 0
-            for sel in selectors:
+            for selector in selectors:
                 if actions >= self.max_actions:
                     break
                 try:
-                    await page.click(sel, timeout=1200)
+                    await page.click(selector, timeout=1200)
                     actions += 1
                     await page.wait_for_timeout(wait_cfg.get("network_idle_ms", 1500))
                     self._remember_page(page.url)
@@ -525,19 +525,22 @@ class BrowserEngine:
             if not self._in_scope(parsed):
                 continue
             params = {
-                k: v[0] if isinstance(v, list) else v
-                for k, v in parse_qs(parsed.query).items()
+                key: value[0] if isinstance(value, list) else value
+                for key, value in parse_qs(parsed.query).items()
             }
-            inputs = [InputField(name=k, value=v, kind="query") for k, v in params.items()]
+            inputs = [
+                InputField(name=key, value=value, kind="query")
+                for key, value in params.items()
+            ]
             url_clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-            fp = self._fingerprint(
+            fingerprint = self._fingerprint(
                 "GET",
                 url_clean,
                 params.keys(),
-                [i.name for i in inputs],
+                [item.name for item in inputs],
             )
-            if fp not in self.visited and params:
-                self.visited.add(fp)
+            if fingerprint not in self.visited and params:
+                self.visited.add(fingerprint)
                 self.surfaces.append(
                     AttackSurface(
                         url=url_clean,
@@ -559,27 +562,27 @@ class BrowserEngine:
             inputs = await form.query_selector_all("input, textarea")
             input_fields = []
             params = {}
-            for inp in inputs:
-                name = await inp.get_attribute("name")
+            for item in inputs:
+                name = await item.get_attribute("name")
                 if not name:
                     continue
                 try:
-                    value = await inp.input_value()
+                    value = await item.input_value()
                 except Exception:
-                    value = await inp.get_attribute("value") or ""
+                    value = await item.get_attribute("value") or ""
                 kind = "body" if method == "POST" else "query"
                 input_fields.append(InputField(name=name, value=value, kind=kind))
                 if method == "GET":
                     params[name] = value
             url_clean = action.split("#")[0]
-            fp = self._fingerprint(
+            fingerprint = self._fingerprint(
                 method,
                 url_clean,
                 params.keys(),
-                [i.name for i in input_fields],
+                [item.name for item in input_fields],
             )
-            if fp not in self.visited:
-                self.visited.add(fp)
+            if fingerprint not in self.visited:
+                self.visited.add(fingerprint)
                 self.surfaces.append(
                     AttackSurface(
                         url=url_clean,
@@ -598,10 +601,13 @@ class BrowserEngine:
         if not self._in_scope(parsed):
             return
         params = {
-            k: v[0] if isinstance(v, list) else v
-            for k, v in parse_qs(parsed.query).items()
+            key: value[0] if isinstance(value, list) else value
+            for key, value in parse_qs(parsed.query).items()
         }
-        inputs = [InputField(name=k, value=v, kind="query") for k, v in params.items()]
+        inputs = [
+            InputField(name=key, value=value, kind="query")
+            for key, value in params.items()
+        ]
         post_data = request.post_data
         if post_data:
             try:
@@ -631,14 +637,14 @@ class BrowserEngine:
             ),
         }
         url_clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        fp = self._fingerprint(
+        fingerprint = self._fingerprint(
             request.method,
             url_clean,
             params.keys(),
-            [i.name for i in inputs],
+            [item.name for item in inputs],
         )
-        if fp not in self.visited:
-            self.visited.add(fp)
+        if fingerprint not in self.visited:
+            self.visited.add(fingerprint)
             surface = AttackSurface(
                 url=url_clean,
                 method=request.method,
