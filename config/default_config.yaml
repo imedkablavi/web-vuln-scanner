@@ -1,10 +1,13 @@
 scanner:
   target: ""
+  profile: passive
   scope:
     allowlist: []
     blocklist: ["logout", "delete", "remove"]
-    include_domains: ["*.example.com"]
+    include_domains: []
     exclude_paths: ["/logout", "/signout"]
+    allow_private: false
+    resolve_dns: true
     max_depth: 2
   crawler:
     max_depth: 3
@@ -29,8 +32,10 @@ scanner:
     capture_trace: true
     capture_screenshots: true
     interactions:
+      enabled: false
+      submit_forms: false
       scroll: true
-      click_selectors: ["button[type=submit]", "[role=button]"]
+      click_selectors: []
     wait:
       network_idle_ms: 1500
     max_pages: 20
@@ -163,12 +168,12 @@ scanner:
     replay_verified_only: true
   plugins:
     sqli:
-      enabled: true
+      enabled: false
       max_tests_per_surface: 3
       time_based: false
       min_length_delta_ratio: 0.05
     business_logic:
-      enabled: true
+      enabled: false
       idor:
         id_param_regex: "(^id$|_id$|Id$|doc)"
         numeric_delta: [-1, 1, 10]
@@ -218,6 +223,7 @@ scanner:
       connect: 10
       read: 20
     max_retries: 3
+    max_redirects: 5
     user_agent_pool: []
     follow_redirects: false
 logging:
