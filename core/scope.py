@@ -28,11 +28,19 @@ class ScopePolicy:
     def __init__(self, config: dict):
         self.config = config
         scope = config.get("scope", {})
-        self.include_domains = [str(item).strip() for item in scope.get("include_domains", []) if str(item).strip()]
-        self.exclude_paths = [str(item) for item in scope.get("exclude_paths", []) if str(item)]
+        self.include_domains = [
+            str(item).strip()
+            for item in scope.get("include_domains", [])
+            if str(item).strip()
+        ]
+        self.exclude_paths = [
+            str(item) for item in scope.get("exclude_paths", []) if str(item)
+        ]
         self.allow_private = bool(scope.get("allow_private", False))
         self.resolve_dns = bool(scope.get("resolve_dns", True))
-        self.max_url_length = int(config.get("crawler", {}).get("max_url_length", 2048))
+        self.max_url_length = int(
+            config.get("crawler", {}).get("max_url_length", 2048)
+        )
 
         target = str(config.get("target", "") or "")
         target_parsed = urlparse(target)
@@ -67,7 +75,11 @@ class ScopePolicy:
             closing = pattern.find("]")
             if closing != -1:
                 host = pattern[1:closing]
-                port = pattern[closing + 2 :] if pattern[closing + 1 : closing + 2] == ":" else None
+                port = (
+                    pattern[closing + 2 :]
+                    if pattern[closing + 1 : closing + 2] == ":"
+                    else None
+                )
                 return host, port
         if pattern.count(":") == 1:
             host, port = pattern.rsplit(":", 1)
@@ -82,8 +94,11 @@ class ScopePolicy:
         patterns = list(self.include_domains)
         if not patterns and self.target_host:
             patterns = [self.target_netloc or self.target_host]
+        # Preserve RequestManager's library-level behavior when callers build a
+        # manager without a target/allowlist. The CLI always pins the target
+        # into include_domains before RequestManager is created.
         if not patterns:
-            return False
+            return True
 
         for raw_pattern in patterns:
             wildcard = raw_pattern.startswith("*.")
@@ -108,7 +123,9 @@ class ScopePolicy:
     @staticmethod
     def _resolved_addresses(host: str) -> Iterable[str]:
         seen: set[str] = set()
-        for family, _socktype, _proto, _canonname, sockaddr in socket.getaddrinfo(host, None):
+        for family, _socktype, _proto, _canonname, sockaddr in socket.getaddrinfo(
+            host, None
+        ):
             if family == socket.AF_INET:
                 address = sockaddr[0]
             elif family == socket.AF_INET6:
@@ -119,7 +136,9 @@ class ScopePolicy:
                 seen.add(address)
                 yield address
 
-    def evaluate(self, url: str, *, resolve_dns: bool | None = None) -> ScopeDecision:
+    def evaluate(
+        self, url: str, *, resolve_dns: bool | None = None
+    ) -> ScopeDecision:
         if not isinstance(url, str) or not url:
             return ScopeDecision(False, "empty URL")
         if len(url) > self.max_url_length:
@@ -127,7 +146,9 @@ class ScopePolicy:
 
         parsed = urlparse(url)
         if parsed.scheme.lower() not in _HTTP_SCHEMES:
-            return ScopeDecision(False, f"unsupported URL scheme: {parsed.scheme or '<missing>'}")
+            return ScopeDecision(
+                False, f"unsupported URL scheme: {parsed.scheme or '<missing>'}"
+            )
         if parsed.username is not None or parsed.password is not None:
             return ScopeDecision(False, "userinfo in URL is not allowed")
 
@@ -137,22 +158,35 @@ class ScopePolicy:
         if any(parsed.path.startswith(prefix) for prefix in self.exclude_paths):
             return ScopeDecision(False, "path excluded by scope policy")
         if not self._domain_allowed(host, parsed.port, parsed.netloc):
-            return ScopeDecision(False, f"host {parsed.netloc or host} is outside configured scope")
+            return ScopeDecision(
+                False,
+                f"host {parsed.netloc or host} is outside configured scope",
+            )
 
         if self._is_sensitive_ip(host) and not self.allow_private:
-            return ScopeDecision(False, f"sensitive IP address {host} is not allowed")
+            return ScopeDecision(
+                False, f"sensitive IP address {host} is not allowed"
+            )
 
         should_resolve = self.resolve_dns if resolve_dns is None else bool(resolve_dns)
         if should_resolve and not self.allow_private and not self._is_sensitive_ip(host):
             try:
                 resolved = list(self._resolved_addresses(host))
             except socket.gaierror as exc:
-                return ScopeDecision(False, f"DNS resolution failed for {host}: {exc}")
+                return ScopeDecision(
+                    False, f"DNS resolution failed for {host}: {exc}"
+                )
             if not resolved:
-                return ScopeDecision(False, f"DNS resolution returned no addresses for {host}")
-            sensitive = [address for address in resolved if self._is_sensitive_ip(address)]
+                return ScopeDecision(
+                    False, f"DNS resolution returned no addresses for {host}"
+                )
+            sensitive = [
+                address for address in resolved if self._is_sensitive_ip(address)
+            ]
             if sensitive:
-                return ScopeDecision(False, f"hostname {host} resolves to a non-public address")
+                return ScopeDecision(
+                    False, f"hostname {host} resolves to a non-public address"
+                )
 
         return ScopeDecision(True, "allowed")
 
