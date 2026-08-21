@@ -7,13 +7,16 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=pwuser:pwuser . .
 
-# The official Playwright image already contains browser binaries. Run the
-# scanner as the non-root Playwright user so Chromium can keep its sandbox.
+# Reports, traces, screenshots and the default scanner log are runtime data.
+# Keep the official Playwright non-root user while making /app writable.
+RUN mkdir -p /app/reports \
+    && chown -R pwuser:pwuser /app
+
 USER pwuser
 
 ENTRYPOINT ["python3", "main_v2.py"]
