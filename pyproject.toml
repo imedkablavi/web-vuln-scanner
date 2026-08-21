@@ -49,8 +49,12 @@ py-modules = ["main_v2"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "layers*", "plugins*", "policies*", "workflows*"]
+include = ["config*", "core*", "layers*", "plugins*", "policies*", "workflows*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+config = ["*.yaml"]
+workflows = ["default/*.yaml", "default/*.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
