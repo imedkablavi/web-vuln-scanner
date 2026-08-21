@@ -1,26 +1,27 @@
-import requests
-import time
-import random
-import threading
-import ipaddress
+import hashlib
 import json
 import os
-import hashlib
+import random
+import threading
+import time
 from collections import defaultdict
-from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
-from urllib.parse import urlparse
-from .utils import logger
+from email.utils import parsedate_to_datetime
+from urllib.parse import urljoin, urlparse
+
+import requests
+
 from .models import AttackSurface, AuthActor, ActorSession, RequestRecord, ResponseRecord
+from .scope import ScopePolicy
+from .utils import logger
 
 
 class RequestManager:
     def __init__(self, config):
         self.config = config
-        self.session = requests.Session()
-        self.session.headers.update(config.get("auth", {}).get("headers", {}))
-        self.cookies = config.get("auth", {}).get("cookies", {})
-        self.session.cookies.update(self.cookies)
+        self.cookies = dict(config.get("auth", {}).get("cookies", {}) or {})
+        self._base_headers = dict(config.get("auth", {}).get("headers", {}) or {})
+        self._session_local = threading.local()
         self.delay = config["concurrency"]["delay"]
         self.max_retries = config["concurrency"]["max_retries"]
         self.timeout = config["concurrency"]["timeout"]
@@ -29,16 +30,22 @@ class RequestManager:
         self.connect_timeout = timeouts_cfg.get("connect", self.timeout)
         self.read_timeout = timeouts_cfg.get("read", self.timeout)
         self.max_retries = req_cfg.get("max_retries", self.max_retries)
-        self.follow_redirects = req_cfg.get("follow_redirects", False)
+        self.follow_redirects = bool(req_cfg.get("follow_redirects", False))
+        self.max_redirects = max(0, int(req_cfg.get("max_redirects", 5)))
+        self.scope_policy = ScopePolicy(config)
+        self.include_domains = list(self.scope_policy.include_domains)
+        self.allow_private = self.scope_policy.allow_private
         self.circuit_breaker = defaultdict(int)
         self.circuit_window = 60
         self.last_reset = time.time()
         self._lock = threading.Lock()
-        self.per_host_limit = int(config.get("concurrency", {}).get("per_host_concurrency", max(1, config["concurrency"].get("threads", 1))))
+        self.per_host_limit = int(
+            config.get("concurrency", {}).get(
+                "per_host_concurrency",
+                max(1, config["concurrency"].get("threads", 1)),
+            )
+        )
         self._host_semaphores = defaultdict(lambda: threading.Semaphore(self.per_host_limit))
-        scope = config.get("scope", {})
-        self.include_domains = scope.get("include_domains", [])
-        self.allow_private = scope.get("allow_private", False)
         self.auth_session_manager = None
         self.event_bus = None
         if config.get("auth_verification", {}).get("enabled"):
@@ -55,6 +62,23 @@ class RequestManager:
             except Exception as exc:  # pragma: no cover - defensive path
                 logger.warning(f"Auth session manager bootstrap failed: {exc}")
                 self.auth_session_manager = None
+
+    def _new_session(self):
+        session = requests.Session()
+        # Scanner targets are untrusted by definition. Do not implicitly ingest
+        # proxy or .netrc credentials from the process environment.
+        session.trust_env = False
+        session.headers.update(self._base_headers)
+        session.cookies.update(self.cookies)
+        return session
+
+    @property
+    def session(self):
+        session = getattr(self._session_local, "session", None)
+        if session is None:
+            session = self._new_session()
+            self._session_local.session = session
+        return session
 
     def attach_auth_session_manager(self, session_manager):
         self.auth_session_manager = session_manager
@@ -86,28 +110,12 @@ class RequestManager:
 
     def _host_allowed(self, host: str, host_with_port: str = "") -> bool:
         host = (host or "").lower().rstrip(".")
-        host_with_port = (host_with_port or host).lower()
-        try:
-            ip = ipaddress.ip_address(host)
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                return self.allow_private
-        except ValueError:
-            pass
-        if not self.include_domains:
-            return True
-        for dom in self.include_domains:
-            dom = str(dom).lower().strip().rstrip(".")
-            if dom.startswith("*."):
-                suffix = dom[2:].split(":", 1)[0]
-                if host == suffix or host.endswith(f".{suffix}"):
-                    return True
-            else:
-                if ":" in dom:
-                    if host_with_port == dom:
-                        return True
-                elif host == dom:
-                    return True
-        return False
+        if not host:
+            return False
+        authority = host_with_port or host
+        if ":" in host and not authority.startswith("["):
+            authority = f"[{host}]"
+        return self.scope_policy.is_allowed(f"https://{authority}/", resolve_dns=False)
 
     @staticmethod
     def _retry_after_seconds(value, fallback):
@@ -125,19 +133,107 @@ class RequestManager:
         except (TypeError, ValueError, OverflowError):
             return fallback
 
-    def send(self, method, url, params=None, data=None, headers=None, cookies=None, timeout=None, json=None, allow_redirects=None, actor_id="", source="", replay_of=""):
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int | None]:
+        parsed = urlparse(url)
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port
+
+    @staticmethod
+    def _redirect_method(method: str, status_code: int) -> str:
+        method = str(method).upper()
+        if status_code == 303 and method != "HEAD":
+            return "GET"
+        if status_code in {301, 302} and method == "POST":
+            return "GET"
+        return method
+
+    def _follow_scoped_redirects(
+        self,
+        response,
+        *,
+        method,
+        headers,
+        cookies,
+        timeout,
+        params,
+        data,
+        json_body,
+    ):
+        redirects = 0
+        current_response = response
+        current_method = str(method).upper()
+        current_headers = dict(headers or {})
+        current_cookies = dict(cookies or {})
+        current_params = params
+        current_data = data
+        current_json = json_body
+
+        while current_response.is_redirect or current_response.is_permanent_redirect:
+            if redirects >= self.max_redirects:
+                raise RuntimeError(f"Redirect limit exceeded ({self.max_redirects})")
+            location = current_response.headers.get("Location")
+            if not location:
+                break
+            next_url = urljoin(current_response.url, location)
+            self.scope_policy.require(next_url, resolve_dns=True)
+
+            previous_origin = self._origin(current_response.url)
+            next_origin = self._origin(next_url)
+            if previous_origin != next_origin:
+                for sensitive_header in ("Authorization", "Cookie", "Proxy-Authorization"):
+                    current_headers.pop(sensitive_header, None)
+                current_cookies = {}
+
+            next_method = self._redirect_method(current_method, current_response.status_code)
+            if next_method == "GET" and current_method != "GET":
+                current_params = None
+                current_data = None
+                current_json = None
+
+            current_response = self.session.request(
+                method=next_method,
+                url=next_url,
+                params=current_params,
+                data=current_data,
+                json=current_json,
+                headers=current_headers or None,
+                cookies=current_cookies,
+                timeout=timeout,
+                allow_redirects=False,
+            )
+            current_method = next_method
+            redirects += 1
+        return current_response
+
+    def send(
+        self,
+        method,
+        url,
+        params=None,
+        data=None,
+        headers=None,
+        cookies=None,
+        timeout=None,
+        json=None,
+        allow_redirects=None,
+        actor_id="",
+        source="",
+        replay_of="",
+    ):
         """Centralized request sending with scope checks, bounded concurrency and retries."""
         self._reset_circuit()
         parsed = urlparse(url)
         host = parsed.hostname or ""
-        host_with_port = parsed.netloc or host
         if parsed.scheme not in {"http", "https"}:
             raise RuntimeError(f"Unsupported URL scheme: {parsed.scheme or '<missing>'}")
         if not host:
             raise RuntimeError(f"Invalid host parsed from URL: {url}")
-        if not self._host_allowed(host, host_with_port):
-            logger.warning(f"Request to host {host_with_port} blocked by scope/SSRF guard.")
-            raise RuntimeError(f"Host {host_with_port} not allowed by scope")
+
+        try:
+            self.scope_policy.require(url, resolve_dns=True)
+        except RuntimeError as exc:
+            logger.warning(f"Request blocked by scope/SSRF guard: {url} ({exc})")
+            raise
 
         with self._lock:
             if self.circuit_breaker.get(host, 0) >= 3:
@@ -145,13 +241,18 @@ class RequestManager:
                 raise RuntimeError(f"Circuit open for host {host}")
 
         effective_timeout = timeout if timeout is not None else (self.connect_timeout, self.read_timeout)
+        follow_redirects = self.follow_redirects if allow_redirects is None else bool(allow_redirects)
+        request_cookies = self.cookies if cookies is None else cookies
         sem = self._host_semaphores[host]
         sem.acquire()
         try:
             retries = 0
             backoff = 1
             while retries <= self.max_retries:
-                base_delay = max(0, float(self.delay) * (0.5 if self.circuit_breaker.get(host, 0) == 0 else 1.0))
+                base_delay = max(
+                    0,
+                    float(self.delay) * (0.5 if self.circuit_breaker.get(host, 0) == 0 else 1.0),
+                )
                 jitter_window = 0 if self.delay <= 0 else min(0.1, max(0.01, float(self.delay) * 0.25))
                 time.sleep(base_delay + random.uniform(0, jitter_window))
                 try:
@@ -162,25 +263,48 @@ class RequestManager:
                         data=data,
                         json=json,
                         headers=headers,
-                        cookies=self.cookies if cookies is None else cookies,
+                        cookies=request_cookies,
                         timeout=effective_timeout,
-                        allow_redirects=self.follow_redirects if allow_redirects is None else allow_redirects,
+                        # Redirects are followed manually so every hop is
+                        # validated by the scope/SSRF policy.
+                        allow_redirects=False,
                     )
+                    if follow_redirects and (resp.is_redirect or resp.is_permanent_redirect):
+                        resp = self._follow_scoped_redirects(
+                            resp,
+                            method=method,
+                            headers=headers,
+                            cookies=request_cookies,
+                            timeout=effective_timeout,
+                            params=params,
+                            data=data,
+                            json_body=json,
+                        )
 
                     if resp.status_code in (429, 503):
                         wait_time = self._retry_after_seconds(resp.headers.get("Retry-After"), backoff)
                         wait_time = min(wait_time, 30)
                         logger.warning(f"Rate limited ({resp.status_code}). Waiting {wait_time}s before retry.")
-                        time.sleep(wait_time)
                         retries += 1
-                        backoff = min(backoff * 2, 30)
                         with self._lock:
                             self.circuit_breaker[host] += 1
+                        if retries > self.max_retries:
+                            break
+                        time.sleep(wait_time)
+                        backoff = min(backoff * 2, 30)
                         continue
+
                     with self._lock:
                         self.circuit_breaker[host] = 0
                     if self.event_bus is not None:
-                        fingerprint = self._request_fingerprint(method, url, actor_id=actor_id, params=params, data=data, json_body=json)
+                        fingerprint = self._request_fingerprint(
+                            method,
+                            url,
+                            actor_id=actor_id,
+                            params=params,
+                            data=data,
+                            json_body=json,
+                        )
                         self.event_bus.emit_record(
                             "request",
                             RequestRecord(
@@ -208,8 +332,8 @@ class RequestManager:
                         )
                     return resp
 
-                except requests.RequestException as e:
-                    logger.error(f"Request failed: {e}")
+                except requests.RequestException as exc:
+                    logger.error(f"Request failed: {exc}")
                     retries += 1
                     if retries > self.max_retries:
                         break
@@ -259,7 +383,22 @@ class RequestManager:
             storage_state_path=actor.storage_state_path,
         )
 
-    def send_as_actor(self, method, url, *, actor: AuthActor | None = None, params=None, data=None, headers=None, cookies=None, timeout=None, json=None, allow_redirects=None, source="direct", replay_of=""):
+    def send_as_actor(
+        self,
+        method,
+        url,
+        *,
+        actor: AuthActor | None = None,
+        params=None,
+        data=None,
+        headers=None,
+        cookies=None,
+        timeout=None,
+        json=None,
+        allow_redirects=None,
+        source="direct",
+        replay_of="",
+    ):
         request_headers = dict(headers or {})
         request_cookies = dict(cookies or {})
         actor_session = self.build_actor_session(actor)
@@ -281,7 +420,12 @@ class RequestManager:
             source=source,
             replay_of=replay_of,
         )
-        if actor is None or getattr(actor, "auth_type", "") == "none" or self.auth_session_manager is None or not self.auth_session_manager.response_requires_reauth(response):
+        if (
+            actor is None
+            or getattr(actor, "auth_type", "") == "none"
+            or self.auth_session_manager is None
+            or not self.auth_session_manager.response_requires_reauth(response)
+        ):
             return response
         refreshed_state = self.auth_session_manager.handle_auth_failure(actor, response)
         if not refreshed_state or not getattr(refreshed_state, "actor_ready", False):
@@ -307,7 +451,14 @@ class RequestManager:
             replay_of=replay_of,
         )
 
-    def send_surface(self, surface: AttackSurface, param_to_inject=None, payload=None, actor: AuthActor | None = None, replay_of=""):
+    def send_surface(
+        self,
+        surface: AttackSurface,
+        param_to_inject=None,
+        payload=None,
+        actor: AuthActor | None = None,
+        replay_of="",
+    ):
         base_params = dict(surface.params)
         base_data = {}
         base_headers = self.config.get("auth", {}).get("headers", {}).copy()
@@ -340,7 +491,9 @@ class RequestManager:
             method = "POST"
         supported = {"GET", "POST", "PUT", "DELETE", "PATCH"}
         if method not in supported:
-            logger.warning(f"Unsupported HTTP method {method} for surface {surface.url}, falling back to GET")
+            logger.warning(
+                f"Unsupported HTTP method {method} for surface {surface.url}, falling back to GET"
+            )
             method = "GET"
 
         json_payload = None
