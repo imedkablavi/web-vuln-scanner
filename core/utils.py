@@ -16,8 +16,9 @@ logger.addHandler(logging.NullHandler())
 def setup_logger(level="INFO", log_file="scanner.log"):
     """Configure the scanner logger explicitly and idempotently.
 
-    Importing ``core.utils`` never creates files. File and stream handlers are
-    installed only when the CLI/application calls this function.
+    Importing ``core.utils`` never creates files. File logging is best-effort:
+    an unwritable configured path must not prevent the scanner from starting,
+    because console logging remains available.
     """
     configured = logging.getLogger(_LOGGER_NAME)
     numeric_level = getattr(logging, str(level).upper(), logging.INFO)
@@ -39,12 +40,19 @@ def setup_logger(level="INFO", log_file="scanner.log"):
 
     if log_file:
         path = Path(log_file).expanduser()
-        if path.parent != Path("."):
-            path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(path, encoding="utf-8")
-        file_handler.setLevel(numeric_level)
-        file_handler.setFormatter(formatter)
-        configured.addHandler(file_handler)
+        try:
+            if path.parent != Path("."):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(path, encoding="utf-8")
+            file_handler.setLevel(numeric_level)
+            file_handler.setFormatter(formatter)
+            configured.addHandler(file_handler)
+        except OSError as exc:
+            configured.warning(
+                "File logging disabled because %s is not writable: %s",
+                path,
+                exc,
+            )
 
     return configured
 
