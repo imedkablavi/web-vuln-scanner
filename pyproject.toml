@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-vuln-scanner"
+version = "0.2.0"
+description = "Evidence-first command-line web security scanner for authorized targets"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "imedkablavi" }]
+keywords = ["security", "scanner", "web", "owasp", "vulnerability-assessment"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+]
+dependencies = [
+  "requests>=2.31,<3",
+  "beautifulsoup4>=4.12,<5",
+  "typer>=0.12,<1",
+  "click>=8.1,<9",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.40,<2"]
+dev = [
+  "pytest>=7.4,<10",
+  "ruff>=0.6,<1",
+]
+
+[project.scripts]
+web-vuln-scanner = "main_v2:app"
+
+[tool.setuptools]
+py-modules = ["main_v2"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "layers*", "plugins*", "workflows*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["smoke_out", "reports"]
