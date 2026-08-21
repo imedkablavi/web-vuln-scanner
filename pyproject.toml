@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "web-vuln-scanner"
-version = "0.2.0"
+version = "0.3.0"
 description = "Evidence-first command-line web security scanner for authorized targets"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["playwright>=1.40,<2"]
+browser = ["playwright>=1.62,<2"]
 dev = [
   "pytest>=7.4,<10",
   "ruff>=0.6,<1",
@@ -38,6 +38,8 @@ dev = [
 
 [project.scripts]
 web-vuln-scanner = "main_v2:app"
+web-vuln-sarif = "core.sarif:main"
+web-vuln-profile = "core.scan_profiles:main"
 
 [tool.setuptools]
 py-modules = ["main_v2"]
