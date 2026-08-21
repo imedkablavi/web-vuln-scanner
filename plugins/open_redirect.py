@@ -1,6 +1,9 @@
-from urllib.parse import urlparse
+from __future__ import annotations
+
 from typing import List, Dict
+
 from .base import BasePlugin, TestCase, VerificationResult
+from core.models import AttackSurface, Finding
 
 
 class OpenRedirectPlugin(BasePlugin):
@@ -27,9 +30,14 @@ class OpenRedirectPlugin(BasePlugin):
         if not response:
             return VerificationResult(False, "LOW", {}, {})
         location = response.headers.get("Location") if hasattr(response, "headers") else None
-        if response.status_code in (301, 302, 303, 307, 308) and location:
-            if testcase.payload in location:
-                return VerificationResult(True, "MEDIUM", {"param": testcase.param, "location": location}, {"param": testcase.param, "payload": testcase.payload}, severity="LOW")
+        if response.status_code in (301, 302, 303, 307, 308) and location and testcase.payload in location:
+            return VerificationResult(
+                True,
+                "MEDIUM",
+                {"param": testcase.param, "location": location},
+                {"param": testcase.param, "payload": testcase.payload},
+                severity="LOW",
+            )
         return VerificationResult(False, "LOW", {}, {})
 
     def build_finding(self, testcase: TestCase, vres: VerificationResult, surface: AttackSurface) -> Finding:
