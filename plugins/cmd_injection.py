@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import random
 import string
 from typing import List, Dict
+
 from .base import BasePlugin, TestCase, VerificationResult
+from core.models import AttackSurface, Finding
 
 
 def _token():
@@ -40,7 +44,13 @@ class CMDInjectionPlugin(BasePlugin):
             return VerificationResult(False, "LOW", {}, {})
         token = testcase.payload.split()[-1]
         if token in response.text:
-            return VerificationResult(True, "MEDIUM", {"param": testcase.param, "token": token}, {"param": testcase.param, "payload": testcase.payload}, severity="HIGH")
+            return VerificationResult(
+                True,
+                "MEDIUM",
+                {"param": testcase.param, "token": token},
+                {"param": testcase.param, "payload": testcase.payload},
+                severity="HIGH",
+            )
         return VerificationResult(False, "LOW", {}, {})
 
     def build_finding(self, testcase: TestCase, vres: VerificationResult, surface: AttackSurface) -> Finding:

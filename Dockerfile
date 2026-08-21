@@ -1,25 +1,20 @@
-# Base Image with Python and Playwright dependencies
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
 
 WORKDIR /app
 ENV SCANNER_BROWSER=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Install System Dependencies
-RUN apt-get update && apt-get install -y \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy Requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy Application Code
-COPY . .
+COPY --chown=pwuser:pwuser . .
 
-# Install Playwright Browsers (can be skipped at runtime if SCANNER_BROWSER=0)
-RUN if [ "$SCANNER_BROWSER" != "0" ]; then playwright install chromium; fi
+# The official Playwright image already contains browser binaries. Run the
+# scanner as the non-root Playwright user so Chromium can keep its sandbox.
+USER pwuser
 
-# Entry Point
 ENTRYPOINT ["python3", "main_v2.py"]
 CMD ["--help"]

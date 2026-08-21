@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import random
 import string
 from typing import List, Dict
+
 from .base import BasePlugin, TestCase, VerificationResult
+from core.models import AttackSurface, Finding
 from core.utils import get_content_hash
 
 

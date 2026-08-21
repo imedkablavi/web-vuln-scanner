@@ -7,6 +7,8 @@ import json
 import os
 import hashlib
 from collections import defaultdict
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from .utils import logger
 from .models import AttackSurface, AuthActor, ActorSession, RequestRecord, ResponseRecord
@@ -28,8 +30,8 @@ class RequestManager:
         self.read_timeout = timeouts_cfg.get("read", self.timeout)
         self.max_retries = req_cfg.get("max_retries", self.max_retries)
         self.follow_redirects = req_cfg.get("follow_redirects", False)
-        self.circuit_breaker = defaultdict(int)  # host -> recent 429 count
-        self.circuit_window = 60  # seconds
+        self.circuit_breaker = defaultdict(int)
+        self.circuit_window = 60
         self.last_reset = time.time()
         self._lock = threading.Lock()
         self.per_host_limit = int(config.get("concurrency", {}).get("per_host_concurrency", max(1, config["concurrency"].get("threads", 1))))
@@ -83,19 +85,18 @@ class RequestManager:
                 self.last_reset = now
 
     def _host_allowed(self, host: str, host_with_port: str = "") -> bool:
-        host = (host or "").lower()
+        host = (host or "").lower().rstrip(".")
         host_with_port = (host_with_port or host).lower()
         try:
             ip = ipaddress.ip_address(host)
-            if ip.is_private or ip.is_loopback:
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                 return self.allow_private
         except ValueError:
-            # not an IP literal
             pass
         if not self.include_domains:
             return True
         for dom in self.include_domains:
-            dom = str(dom).lower()
+            dom = str(dom).lower().strip().rstrip(".")
             if dom.startswith("*."):
                 suffix = dom[2:].split(":", 1)[0]
                 if host == suffix or host.endswith(f".{suffix}"):
@@ -108,14 +109,30 @@ class RequestManager:
                     return True
         return False
 
+    @staticmethod
+    def _retry_after_seconds(value, fallback):
+        if not value:
+            return fallback
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            pass
+        try:
+            when = parsedate_to_datetime(str(value))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max(0, int((when - datetime.now(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+
     def send(self, method, url, params=None, data=None, headers=None, cookies=None, timeout=None, json=None, allow_redirects=None, actor_id="", source="", replay_of=""):
-        """
-        Centralized request sending with rate limiting, backoff, and retry handling.
-        """
+        """Centralized request sending with scope checks, bounded concurrency and retries."""
         self._reset_circuit()
         parsed = urlparse(url)
         host = parsed.hostname or ""
         host_with_port = parsed.netloc or host
+        if parsed.scheme not in {"http", "https"}:
+            raise RuntimeError(f"Unsupported URL scheme: {parsed.scheme or '<missing>'}")
         if not host:
             raise RuntimeError(f"Invalid host parsed from URL: {url}")
         if not self._host_allowed(host, host_with_port):
@@ -127,17 +144,14 @@ class RequestManager:
                 logger.warning(f"Circuit breaker open for host {host}, skipping request.")
                 raise RuntimeError(f"Circuit open for host {host}")
 
+        effective_timeout = timeout if timeout is not None else (self.connect_timeout, self.read_timeout)
         sem = self._host_semaphores[host]
         sem.acquire()
         try:
             retries = 0
             backoff = 1
             while retries <= self.max_retries:
-                # Keep normal traffic moving while still spacing requests on constrained hosts.
-                if self.circuit_breaker.get(host, 0) == 0:
-                    base_delay = max(0, float(self.delay) * 0.5)
-                else:
-                    base_delay = max(0, float(self.delay))
+                base_delay = max(0, float(self.delay) * (0.5 if self.circuit_breaker.get(host, 0) == 0 else 1.0))
                 jitter_window = 0 if self.delay <= 0 else min(0.1, max(0.01, float(self.delay) * 0.25))
                 time.sleep(base_delay + random.uniform(0, jitter_window))
                 try:
@@ -149,19 +163,13 @@ class RequestManager:
                         json=json,
                         headers=headers,
                         cookies=self.cookies if cookies is None else cookies,
-                        timeout=(self.connect_timeout, self.read_timeout),
+                        timeout=effective_timeout,
                         allow_redirects=self.follow_redirects if allow_redirects is None else allow_redirects,
                     )
 
                     if resp.status_code in (429, 503):
-                        retry_after = resp.headers.get("Retry-After")
-                        if retry_after:
-                            try:
-                                wait_time = int(retry_after)
-                            except ValueError:
-                                wait_time = backoff
-                        else:
-                            wait_time = backoff
+                        wait_time = self._retry_after_seconds(resp.headers.get("Retry-After"), backoff)
+                        wait_time = min(wait_time, 30)
                         logger.warning(f"Rate limited ({resp.status_code}). Waiting {wait_time}s before retry.")
                         time.sleep(wait_time)
                         retries += 1
@@ -203,6 +211,8 @@ class RequestManager:
                 except requests.RequestException as e:
                     logger.error(f"Request failed: {e}")
                     retries += 1
+                    if retries > self.max_retries:
+                        break
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 30)
             raise RuntimeError(f"Request to {url} failed after retries")
@@ -298,9 +308,6 @@ class RequestManager:
         )
 
     def send_surface(self, surface: AttackSurface, param_to_inject=None, payload=None, actor: AuthActor | None = None, replay_of=""):
-        """
-        Wrapper for sending using an AttackSurface. Supports overriding a single param/input.
-        """
         base_params = dict(surface.params)
         base_data = {}
         base_headers = self.config.get("auth", {}).get("headers", {}).copy()
@@ -310,7 +317,6 @@ class RequestManager:
             base_headers.update(actor_session.headers)
             base_cookies.update(actor_session.cookies)
         has_body_inputs = False
-        # inputs for body/query decisions
         for field in surface.inputs:
             if field.kind == "body":
                 has_body_inputs = True
