@@ -10,9 +10,7 @@ def make_config(**scope_overrides):
     scope = {
         "include_domains": ["example.com", "*.example.org"],
         "allow_private": False,
-        # Unit tests should not depend on external DNS. DNS rebinding behavior
-        # is covered directly in test_scope.py.
-        "resolve_dns": False,
+        "resolve_dns": True,
     }
     scope.update(scope_overrides)
     return {
@@ -49,6 +47,14 @@ def fake_response(url, *, status=200, headers=None):
     )
 
 
+def allow_public_dns(monkeypatch, manager):
+    monkeypatch.setattr(
+        manager.scope_policy,
+        "_resolved_addresses",
+        lambda _host: iter(["93.184.216.34"]),
+    )
+
+
 def test_scope_allows_exact_and_wildcard_domains():
     manager = RequestManager(make_config())
     assert manager._host_allowed("example.com")
@@ -68,9 +74,7 @@ def test_scope_blocks_private_and_reserved_ip_literals_by_default():
 
 
 def test_scope_can_explicitly_allow_private_targets():
-    manager = RequestManager(
-        make_config(include_domains=[], allow_private=True)
-    )
+    manager = RequestManager(make_config(include_domains=[], allow_private=True))
     assert manager._host_allowed("127.0.0.1")
     assert manager._host_allowed("10.0.0.5")
 
@@ -92,6 +96,7 @@ def test_send_rejects_non_http_schemes_before_network_call(monkeypatch):
 
 def test_send_honors_per_call_timeout(monkeypatch):
     manager = RequestManager(make_config(include_domains=[]))
+    allow_public_dns(monkeypatch, manager)
     observed = {}
 
     def fake_request(**kwargs):
@@ -102,7 +107,6 @@ def test_send_honors_per_call_timeout(monkeypatch):
     response = manager.send("GET", "https://public.example", timeout=1.25)
     assert response.status_code == 200
     assert observed["timeout"] == 1.25
-    # Redirect following is intentionally centralized and manual.
     assert observed["allow_redirects"] is False
 
 
@@ -140,6 +144,7 @@ def test_scoped_redirect_is_followed_only_after_validation(monkeypatch):
     config = make_config(include_domains=["example.com"])
     config["request"]["follow_redirects"] = True
     manager = RequestManager(config)
+    allow_public_dns(monkeypatch, manager)
     calls = []
 
     def fake_request(**kwargs):
@@ -162,6 +167,7 @@ def test_off_scope_redirect_is_blocked_before_second_network_call(monkeypatch):
     config = make_config(include_domains=["example.com"])
     config["request"]["follow_redirects"] = True
     manager = RequestManager(config)
+    allow_public_dns(monkeypatch, manager)
     calls = []
 
     def fake_request(**kwargs):
