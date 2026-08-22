@@ -4,7 +4,10 @@ import os
 import pytest
 
 from core.models import AttackSurface, Finding
-from core.scan_checkpoint import ScanCheckpoint, testcase_fingerprint
+from core.scan_checkpoint import (
+    ScanCheckpoint,
+    testcase_fingerprint as checkpoint_testcase_fingerprint,
+)
 from core.scanner import ScannerEngine
 from plugins.base import BasePlugin, TestCase, VerificationResult
 
@@ -148,7 +151,7 @@ def test_checkpoint_round_trip_is_secret_minimized_and_restrictive(tmp_path):
         kind="query",
         payload="probe-one",
     )
-    key = testcase_fingerprint("fixture", surface, testcase)
+    key = checkpoint_testcase_fingerprint("fixture", surface, testcase)
     checkpoint.record_completed(key, sample_finding())
     checkpoint.finalize(completed=False)
 
