@@ -51,6 +51,7 @@ jobs:
           python -m core.scan_profiles passive --config config/default_config.yaml --output /tmp/passive.yaml
           python -m core.scan_profiles safe-active --config config/default_config.yaml --output /tmp/safe-active.yaml
           web-vuln-scanner --help
+          web-vuln-scanner scan --help
           web-vuln-scanner version
           web-vuln-scanner checks
           web-vuln-scanner checks --json >/tmp/checks.json
@@ -106,6 +107,7 @@ jobs:
           /tmp/wheel-test/bin/python -m pip install --upgrade pip
           /tmp/wheel-test/bin/python -m pip install dist/*.whl
           /tmp/wheel-test/bin/web-vuln-scanner --help
+          /tmp/wheel-test/bin/web-vuln-scanner scan --help
           /tmp/wheel-test/bin/web-vuln-scanner version
           /tmp/wheel-test/bin/web-vuln-scanner checks
           /tmp/wheel-test/bin/web-vuln-scanner checks --json >/tmp/wheel-checks.json
@@ -117,6 +119,32 @@ jobs:
           /tmp/wheel-test/bin/web-vuln-sarif --help
           /tmp/wheel-test/bin/web-vuln-diff --help
           /tmp/wheel-test/bin/web-vuln-har --help
+      - name: Verify packaged safe templates
+        run: |
+          cd /tmp
+          /tmp/wheel-test/bin/python - <<'PY'
+          from importlib import resources
+          import yaml
+          from layers.safe_template_checks import validate_safe_template
+
+          expected = {
+              "apache-server-status.yaml",
+              "go-expvar-exposed.yaml",
+              "nginx-stub-status.yaml",
+              "phpinfo-exposed.yaml",
+          }
+          root = resources.files("config").joinpath("safe_templates")
+          if not root.is_dir():
+              raise SystemExit("packaged safe_templates directory is missing")
+          found = {item.name for item in root.iterdir() if item.is_file()}
+          missing = sorted(expected - found)
+          if missing:
+              raise SystemExit(f"packaged safe templates missing: {missing}")
+          for name in sorted(expected):
+              raw = yaml.safe_load(root.joinpath(name).read_text(encoding="utf-8")) or {}
+              validate_safe_template(raw)
+          print(f"validated {len(expected)} packaged safe templates")
+          PY
       - name: Run installed wheel outside source tree
         run: |
           PORT=$(/tmp/wheel-test/bin/python - <<'PY'
