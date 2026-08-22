@@ -19,6 +19,11 @@ scanner:
       max_scripts: 10
       max_script_bytes: 250000
       max_endpoints: 100
+    har_seed:
+      enabled: false
+      files: []
+      max_entries: 5000
+      active_tests: false
 
   concurrency:
     threads: 5
