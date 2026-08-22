@@ -42,7 +42,12 @@ def test_materialize_profile_preserves_unrelated_config(tmp_path):
     source = tmp_path / "config.yaml"
     destination = tmp_path / "generated.yaml"
     source.write_text(
-        yaml.safe_dump({"scanner": {"scope": {"include_domains": ["example.test"]}}, "logging": {"level": "INFO"}}),
+        yaml.safe_dump(
+            {
+                "scanner": {"scope": {"include_domains": ["example.test"]}},
+                "logging": {"level": "INFO"},
+            }
+        ),
         encoding="utf-8",
     )
     materialize_profile(source, "safe-active", destination)
@@ -82,8 +87,13 @@ def test_sarif_conversion_shape():
     run = sarif["runs"][0]
     assert run["tool"]["driver"]["name"] == "Web Vulnerability Scanner"
     assert len(run["tool"]["driver"]["rules"]) == 1
-    assert run["results"][0]["level"] == "warning"
-    assert run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "https://example.test/"
+    result = run["results"][0]
+    assert result["level"] == "warning"
+    location = result["locations"][0]["logicalLocations"][0]
+    assert location["kind"] == "web-target"
+    assert location["fullyQualifiedName"] == "https://example.test/"
+    assert "physicalLocation" not in result["locations"][0]
+    assert result["properties"]["targetUrl"] == "https://example.test/"
 
 
 def test_sarif_file_conversion(tmp_path):
@@ -92,4 +102,16 @@ def test_sarif_file_conversion(tmp_path):
     output = convert_report(source)
     assert output.name == "scan_report.sarif"
     data = json.loads(output.read_text(encoding="utf-8"))
-    assert data["runs"][0]["results"][0]["ruleId"].startswith("web-vuln-scanner/")
+    assert data["runs"][0]["results"][0]["ruleId"].startswith(
+        "web-vuln-scanner/"
+    )
+
+
+def test_sarif_does_not_copy_raw_evidence_secrets():
+    secret = "SARIF-SUPERSECRET-123456789"
+    report = _sample_report()
+    report["findings"][0]["evidence"] = {"DB_PASSWORD": secret}
+    report["findings"][0]["remediation"] = f"Rotate token={secret}"
+    serialized = json.dumps(report_to_sarif(report))
+    assert secret not in serialized
+    assert "***redacted***" in serialized
