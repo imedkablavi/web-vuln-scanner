@@ -12,12 +12,13 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 
 COPY --chown=pwuser:pwuser . .
 
-# Reports, traces, screenshots and the default scanner log are runtime data.
-# Keep the official Playwright non-root user while making /app writable.
-RUN mkdir -p /app/reports \
+# Install the same packaged entry point that wheel users receive. Runtime
+# dependencies are already pinned above, so avoid resolving them a second time.
+RUN python -m pip install --no-cache-dir --no-deps . \
+    && mkdir -p /app/reports \
     && chown -R pwuser:pwuser /app
 
 USER pwuser
 
-ENTRYPOINT ["python3", "main_v2.py"]
+ENTRYPOINT ["web-vuln-scanner"]
 CMD ["--help"]
