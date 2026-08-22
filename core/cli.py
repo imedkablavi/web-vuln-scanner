@@ -33,23 +33,23 @@ _ACTIVE_WEB_CHECKS = {
     "ssti": {
         "maturity": "stable",
         "activity": "safe-active",
-        "cwe": "CWE-1336",
-        "wstg": "WSTG-INPV-18",
+        "cwe": ["CWE-1336"],
+        "wstg": ["WSTG-INPV-18"],
         "summary": "Two-result arithmetic template evaluation check",
     },
     "crlf": {
         "maturity": "stable",
         "activity": "safe-active",
-        "cwe": "CWE-113",
-        "wstg": "WSTG-INPV-15",
+        "cwe": ["CWE-113"],
+        "wstg": ["WSTG-INPV-15"],
         "summary": "Response-header canary injection check",
     },
     "trace": {
         "maturity": "stable",
         "activity": "safe-active",
-        "cwe": "CWE-16",
-        "wstg": "WSTG-CONF-06",
-        "summary": "TRACE header reflection check",
+        "cwe": ["CWE-16"],
+        "wstg": ["WSTG-CONF-06"],
+        "summary": "TRACE request-header reflection check",
     },
 }
 
@@ -58,7 +58,7 @@ def _package_version() -> str:
     try:
         return version("web-vuln-scanner")
     except PackageNotFoundError:
-        return "0.3.0-dev"
+        return "0.4.0-dev"
 
 
 def _config_arg(argv: list[str]) -> tuple[str | None, int | None]:
@@ -146,44 +146,102 @@ def _print_rows(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
         print("  ".join(str(value).ljust(widths[index]) for index, value in enumerate(row)))
 
 
-def _print_checks() -> None:
-    rows: list[tuple[str, ...]] = []
+def _checks_data() -> list[dict[str, object]]:
+    checks: list[dict[str, object]] = []
     for name, meta in sorted(get_plugin_catalog().items()):
-        rows.append(
-            (
-                name,
-                str(meta.get("maturity", "unknown")),
-                str(meta.get("activity", "unknown")),
-                ",".join(meta.get("cwe", []) or ["-"]),
-                ",".join(meta.get("wstg", []) or ["-"]),
-            )
+        checks.append(
+            {
+                "name": name,
+                "maturity": str(meta.get("maturity", "unknown")),
+                "activity": str(meta.get("activity", "unknown")),
+                "cwe": list(meta.get("cwe", []) or []),
+                "wstg": list(meta.get("wstg", []) or []),
+                "summary": str(meta.get("notes", "")),
+                "source": "plugin",
+            }
         )
     for name, meta in sorted(_ACTIVE_WEB_CHECKS.items()):
-        rows.append((name, meta["maturity"], meta["activity"], meta["cwe"], meta["wstg"]))
+        checks.append(
+            {
+                "name": name,
+                "maturity": meta["maturity"],
+                "activity": meta["activity"],
+                "cwe": list(meta["cwe"]),
+                "wstg": list(meta["wstg"]),
+                "summary": meta["summary"],
+                "source": "active-web",
+            }
+        )
+    return checks
+
+
+def _print_checks(*, as_json: bool = False) -> None:
+    checks = _checks_data()
+    if as_json:
+        print(json.dumps({"checks": checks}, indent=2, ensure_ascii=False))
+        return
+    rows = [
+        (
+            str(item["name"]),
+            str(item["maturity"]),
+            str(item["activity"]),
+            ",".join(item["cwe"] or ["-"]),
+            ",".join(item["wstg"] or ["-"]),
+        )
+        for item in checks
+    ]
     print("Available checks")
-    print("Stable checks may run in safe-active/full-authorized. Experimental checks stay blocked by policy.\n")
+    print("Stable active checks run only in an active profile. Experimental checks remain disabled.\n")
     _print_rows(("CHECK", "MATURITY", "MODE", "CWE", "WSTG"), rows)
 
 
-def _print_profiles() -> None:
+def _profiles_data() -> list[dict[str, str]]:
     descriptions = {
-        "passive": "Inventory and posture checks only; no payload injection.",
-        "safe-active": "Bounded injection/redirect probes without browser interaction or auth workflows.",
+        "passive": "Inventory and posture checks only; no active payloads.",
+        "safe-active": "Bounded active checks without browser interaction or auth workflows.",
         "full-authorized": "Browser, auth, workflow, and stable active checks for controlled assessments.",
     }
-    rows = [(name, descriptions.get(name, "")) for name in sorted(PROFILES)]
+    return [
+        {"name": name, "purpose": descriptions.get(name, "")}
+        for name in sorted(PROFILES)
+    ]
+
+
+def _print_profiles(*, as_json: bool = False) -> None:
+    profiles = _profiles_data()
+    if as_json:
+        print(json.dumps({"profiles": profiles}, indent=2, ensure_ascii=False))
+        return
+    rows = [(item["name"], item["purpose"]) for item in profiles]
     print("Scan profiles\n")
     _print_rows(("PROFILE", "PURPOSE"), rows)
+
+
+def _load_validated_config(config_path: str | None) -> tuple[Path, list[str]]:
+    runtime_path = materialize_runtime_config(config_path)
+    with open(runtime_path, "r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    warnings = validate_config(config)
+    return Path(runtime_path), warnings
+
+
+def _validate_config_command(config_path: str | None) -> int:
+    try:
+        runtime_path, warnings = _load_validated_config(config_path)
+    except Exception as exc:
+        print(f"Config validation failed: {exc}", file=sys.stderr)
+        return 2
+    print(f"Config OK: {runtime_path}")
+    for warning in warnings:
+        print(f"Warning: {warning}")
+    return 0
 
 
 def _doctor() -> int:
     rows: list[tuple[str, ...]] = []
     failures = 0
     try:
-        runtime_path = materialize_runtime_config(None)
-        with open(runtime_path, "r", encoding="utf-8") as handle:
-            config = yaml.safe_load(handle) or {}
-        warnings = validate_config(config)
+        runtime_path, warnings = _load_validated_config(None)
         rows.append(("config", "ok", str(runtime_path)))
         for warning in warnings:
             rows.append(("config warning", "warn", warning))
@@ -209,37 +267,66 @@ def _doctor() -> int:
     return 0
 
 
+def _print_scan_help() -> None:
+    print("Usage:")
+    print("  web-vuln-scanner scan <target> [options]\n")
+    print("Scan options:")
+    rows = [
+        ("--profile NAME", "passive, safe-active, or full-authorized (default: passive)"),
+        ("--config PATH", "scanner YAML configuration"),
+        ("--swagger URL", "OpenAPI/Swagger JSON endpoint"),
+        ("--graphql URL", "GraphQL endpoint"),
+        ("--output DIR", "report directory (default: reports)"),
+        ("--debug", "print scanner counters and diagnostic detail"),
+        ("--fail-on-severity LEVEL", "CI gate: info, low, medium, high, critical"),
+        ("--fail-on-verification STATUS", "CI gate: informational, suspected, detected, verified"),
+    ]
+    _print_rows(("OPTION", "DESCRIPTION"), rows)
+    print("\nExit codes: 0 clean, 1 findings, 2 runtime/config error, 3 partial or aborted.")
+
+
 def _print_overview() -> None:
     print(f"web-vuln-scanner {_package_version()}")
-    print("Authorized web assessment CLI\n")
-    print("Common commands:")
-    print("  web-vuln-scanner scan https://target.example --profile passive")
-    print("  web-vuln-scanner checks")
-    print("  web-vuln-scanner profiles")
-    print("  web-vuln-scanner doctor")
-    print("\nThe legacy form `web-vuln-scanner https://target.example` still works.")
-    print("CI gates: --fail-on-severity <level>  --fail-on-verification <status>\n")
+    print("Scoped web application assessment CLI\n")
+    print("Commands:")
+    rows = [
+        ("scan <target>", "run a scan"),
+        ("checks [--json]", "list available checks and maturity"),
+        ("profiles [--json]", "show built-in scan profiles"),
+        ("doctor", "check the installed runtime"),
+        ("validate-config [PATH]", "validate scanner YAML without scanning"),
+        ("version", "print the installed version"),
+    ]
+    _print_rows(("COMMAND", "DESCRIPTION"), rows)
+    print("\nRun `web-vuln-scanner scan --help` for scan options.")
+    print("The legacy `web-vuln-scanner <target>` form is still accepted.")
 
 
 def _handle_meta_command(argv: list[str]) -> bool:
     if len(argv) <= 1:
         return False
     command = argv[1].strip().lower()
+    extras = argv[2:]
     if command in {"version", "--version", "-v"}:
         print(_package_version())
         return True
     if command == "checks":
-        _print_checks()
+        _print_checks(as_json="--json" in extras)
         return True
     if command == "profiles":
-        _print_profiles()
+        _print_profiles(as_json="--json" in extras)
         return True
     if command == "doctor":
         raise SystemExit(_doctor())
+    if command == "validate-config":
+        path = next((item for item in extras if not item.startswith("-")), None)
+        raise SystemExit(_validate_config_command(path))
+    if command == "scan" and any(item in {"--help", "-h"} for item in extras):
+        _print_scan_help()
+        return True
     if command in {"help", "--help", "-h"}:
         _print_overview()
-        if command == "help":
-            return True
+        return True
     return False
 
 
