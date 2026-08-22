@@ -1,6 +1,7 @@
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qs
 
+from .js_discovery import JavaScriptEndpointDiscoverer
 from .models import AttackSurface, InputField
 from .scope import ScopePolicy
 from .utils import logger, normalize_url
@@ -22,6 +23,8 @@ class Crawler:
         self.scope_policy = getattr(request_manager, "scope_policy", None) or ScopePolicy(config)
         self.errors = []
         self.pages_visited = []
+        self.js_endpoints = []
+        self.js_discovery = JavaScriptEndpointDiscoverer(request_manager, config)
 
     def extract_csrf_token(self, soup):
         token_input = soup.find("input", {"name": ["csrf_token", "csrf", "_csrf", "authenticity_token"]})
@@ -42,6 +45,55 @@ class Crawler:
 
     def _fingerprint(self, method, url, params_keys, input_names):
         return f"{method}:{url}:{sorted(params_keys)}:{sorted(input_names)}"
+
+    def _record_javascript_endpoints(self, soup, start_url, depth, actor=None):
+        entries = self.js_discovery.discover_from_soup(soup, start_url, actor=actor)
+        for entry in entries:
+            url = entry.get("url", "")
+            method = str(entry.get("method", "GET") or "GET").upper()
+            if not url or url in self.js_endpoints:
+                continue
+            self.js_endpoints.append(url)
+
+            # Static JavaScript discovery is inventory-first. Only GET endpoints
+            # with explicit query parameters become attack surfaces; inferred
+            # POST/PUT/PATCH/DELETE routes are not invoked or attacked merely
+            # because a string appeared in JavaScript.
+            if method != "GET":
+                continue
+            parsed = urlparse(url)
+            inputs = parse_qs(parsed.query)
+            if not inputs:
+                continue
+            flat_inputs = {key: values[0] for key, values in inputs.items()}
+            surface_inputs = [
+                InputField(name=key, value=values[0], kind="query")
+                for key, values in inputs.items()
+            ]
+            url_clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            fp = self._fingerprint(
+                "GET",
+                url_clean,
+                flat_inputs.keys(),
+                [item.name for item in surface_inputs],
+            )
+            if fp in self.visited:
+                continue
+            self.visited.add(fp)
+            self.surfaces.append(
+                AttackSurface(
+                    url=url_clean,
+                    method="GET",
+                    params=flat_inputs,
+                    inputs=surface_inputs,
+                    source="javascript-static",
+                    meta={
+                        "depth": depth,
+                        "javascript_source": entry.get("source", ""),
+                        "visible_to_actor": getattr(actor, "actor_id", ""),
+                    },
+                )
+            )
 
     def crawl(self, start_url, depth=0, actor=None):
         if depth > self.max_depth or len(self.visited) >= self.max_urls:
@@ -66,6 +118,7 @@ class Crawler:
             self.pages_visited.append(start_url)
 
             soup = BeautifulSoup(resp.text, "html.parser")
+            self._record_javascript_endpoints(soup, start_url, depth, actor=actor)
 
             for form in soup.find_all("form"):
                 action = urljoin(start_url, form.get("action", ""))
@@ -142,3 +195,6 @@ class Crawler:
 
     def get_surfaces(self):
         return self.surfaces
+
+    def get_javascript_report(self):
+        return self.js_discovery.report()
