@@ -1,3 +1,5 @@
+import pytest
+
 from core.har_import import import_har_data
 
 
@@ -101,6 +103,25 @@ def test_har_import_reads_form_parameter_names():
     assert fields == {("body", "username"), ("body", "password")}
     assert "alice" not in repr(inventory)
     assert "secret" not in repr(inventory)
+
+
+def test_har_import_strips_request_url_userinfo():
+    inventory = import_har_data(
+        har([entry("GET", "https://alice:url-secret@example.test/api/profile?q=1")]),
+        target="https://example.test/",
+    )
+    assert inventory["summary"]["surfaces"] == 1
+    assert inventory["surfaces"][0]["url"] == "https://example.test/api/profile"
+    assert "url-secret" not in repr(inventory)
+    assert "alice@" not in repr(inventory)
+
+
+def test_har_import_rejects_credentials_embedded_in_target_scope():
+    with pytest.raises(ValueError, match="embedded URL credentials"):
+        import_har_data(
+            har([entry("GET", "https://example.test/")]),
+            target="https://alice:secret@example.test/",
+        )
 
 
 def test_har_import_enforces_entry_budget():
