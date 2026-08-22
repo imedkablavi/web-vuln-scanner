@@ -8,16 +8,12 @@ from core.models import Finding
 from core.redaction import redact_text
 
 
-_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
-
-
 class ActiveWebProbeScanner:
     """Low-impact checks used by the safe-active and full-authorized profiles.
 
-    These probes are deliberately narrow: one observed query parameter per URL,
-    no external callback infrastructure, no timing payloads, and no redirect
-    following. They are intended to produce reproducible evidence without
-    changing application state.
+    The layer tests one observed query parameter per URL, has an independent
+    request budget, never follows redirects, and does not use external callback,
+    command-execution, file-read, or timing payloads.
     """
 
     def __init__(self, requester, config):
@@ -26,6 +22,7 @@ class ActiveWebProbeScanner:
         self.layer_config = config.get("active_checks", {}).get("web", {})
         self.enabled = bool(self.layer_config.get("enabled", False))
         self.max_urls = max(0, int(self.layer_config.get("max_urls", 10)))
+        self.max_requests = max(0, int(self.layer_config.get("max_requests", 50)))
         self.enable_ssti = bool(self.layer_config.get("ssti", True))
         self.enable_crlf = bool(self.layer_config.get("crlf", True))
         self.enable_trace = bool(self.layer_config.get("trace", True))
@@ -33,6 +30,8 @@ class ActiveWebProbeScanner:
         self.skipped: List[str] = []
         self.checked_urls = 0
         self.requests_sent = 0
+        self._trace_origins: set[str] = set()
+        self._budget_notice_written = False
 
     def scan(self, snapshots: List[Dict[str, Any]]) -> Tuple[List[Finding], Dict[str, Any]]:
         if not self.enabled:
@@ -40,21 +39,27 @@ class ActiveWebProbeScanner:
 
         findings: List[Finding] = []
         for snapshot in snapshots[: self.max_urls]:
+            if not self._budget_available():
+                break
             url = str(snapshot.get("url") or "")
             if not url:
                 continue
             self.checked_urls += 1
-            if self.enable_trace:
-                finding = self._check_trace(url)
+
+            origin = self._origin(url)
+            if self.enable_trace and origin and origin not in self._trace_origins:
+                self._trace_origins.add(origin)
+                finding = self._check_trace(origin)
                 if finding:
                     findings.append(finding)
+
             if not self._first_query_param(url):
                 continue
-            if self.enable_crlf:
+            if self.enable_crlf and self._budget_available():
                 finding = self._check_crlf(url)
                 if finding:
                     findings.append(finding)
-            if self.enable_ssti:
+            if self.enable_ssti and self._remaining_requests() >= 2:
                 finding = self._check_ssti(url, snapshot.get("text") or "")
                 if finding:
                     findings.append(finding)
@@ -65,6 +70,8 @@ class ActiveWebProbeScanner:
             "enabled": self.enabled,
             "checked_urls": self.checked_urls,
             "requests_sent": self.requests_sent,
+            "max_requests": self.max_requests,
+            "trace_origins_checked": len(self._trace_origins),
             "checks": {
                 "ssti": self.enable_ssti,
                 "crlf": self.enable_crlf,
@@ -73,6 +80,32 @@ class ActiveWebProbeScanner:
             "errors": self.errors,
             "skipped": self.skipped,
         }
+
+    def _remaining_requests(self) -> int:
+        return max(0, self.max_requests - self.requests_sent)
+
+    def _budget_available(self) -> bool:
+        if self.requests_sent < self.max_requests:
+            return True
+        if not self._budget_notice_written:
+            self.skipped.append(
+                f"Active web request budget reached ({self.max_requests})."
+            )
+            self._budget_notice_written = True
+        return False
+
+    def _reserve_request(self) -> bool:
+        if not self._budget_available():
+            return False
+        self.requests_sent += 1
+        return True
+
+    @staticmethod
+    def _origin(url: str) -> str:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return ""
+        return f"{parsed.scheme}://{parsed.netloc}/"
 
     @staticmethod
     def _token(*parts: str) -> str:
@@ -102,8 +135,9 @@ class ActiveWebProbeScanner:
         return base_url, updated
 
     def _send_query_probe(self, url: str, param: str, payload: str):
+        if not self._reserve_request():
+            return None
         base_url, params = self._replace_query_value(url, param, payload)
-        self.requests_sent += 1
         return self.requester.send(
             "GET",
             base_url,
@@ -165,6 +199,9 @@ class ActiveWebProbeScanner:
             ("dollar-expression", "${13*17}", "${19*23}", "221", "437"),
         ]
         for family, expression_a, expression_b, result_a, result_b in families:
+            if self._remaining_requests() < 2:
+                self._budget_available()
+                break
             payload_a = f"{token}-a-{expression_a}-end"
             payload_b = f"{token}-b-{expression_b}-end"
             expected_a = f"{token}-a-{result_a}-end"
@@ -205,7 +242,7 @@ class ActiveWebProbeScanner:
                     "statuses": [response_a.status_code, response_b.status_code],
                     "response_excerpt": redact_text(body_b, max_length=220),
                 },
-                remediation="Treat template source as code, keep user input out of template expressions, and use sandboxed rendering with strict data-only bindings.",
+                remediation="Keep user-controlled values out of template expressions. Pass them as data through the template engine's normal escaping and sandboxing controls.",
                 reproduction={
                     "method": "GET",
                     "url": url,
@@ -223,8 +260,9 @@ class ActiveWebProbeScanner:
     def _check_trace(self, url: str) -> Finding | None:
         token = self._token("trace", url)
         header_name = "X-WVS-Trace-Canary"
+        if not self._reserve_request():
+            return None
         try:
-            self.requests_sent += 1
             response = self.requester.send(
                 "TRACE",
                 url,
