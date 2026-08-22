@@ -4,13 +4,15 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
+from .models import AttackSurface, InputField
 from .scope import ScopePolicy
 
 
 _ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+_SAFE_SEED_METHODS = {"GET", "HEAD"}
 _SENSITIVE_HEADER_NAMES = {
     "authorization",
     "proxy-authorization",
@@ -150,13 +152,7 @@ def _fingerprint(surface: Dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def import_har_data(
-    data: Dict[str, Any],
-    *,
-    target: str,
-    allow_private: bool = False,
-    max_entries: int = 5000,
-) -> Dict[str, Any]:
+def _har_entries(data: Dict[str, Any], max_entries: int) -> Tuple[List[Dict[str, Any]], bool]:
     if not isinstance(data, dict):
         raise ValueError("HAR document must be a JSON object")
     log = data.get("log")
@@ -164,6 +160,18 @@ def import_har_data(
         raise ValueError("HAR document is missing log.entries")
     if max_entries <= 0:
         raise ValueError("max_entries must be > 0")
+    all_entries = log.get("entries", [])
+    return all_entries[:max_entries], len(all_entries) > max_entries
+
+
+def import_har_data(
+    data: Dict[str, Any],
+    *,
+    target: str,
+    allow_private: bool = False,
+    max_entries: int = 5000,
+) -> Dict[str, Any]:
+    entries, truncated = _har_entries(data, max_entries)
 
     scope_config = _scope_config(target, allow_private=allow_private)
     scope = ScopePolicy(scope_config)
@@ -171,7 +179,6 @@ def import_har_data(
     seen = set()
     skipped = {"out_of_scope": 0, "unsupported": 0, "duplicate": 0}
 
-    entries = log.get("entries", [])[:max_entries]
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("request"), dict):
             skipped["unsupported"] += 1
@@ -210,7 +217,7 @@ def import_har_data(
             "entries_seen": len(entries),
             "surfaces": len(surfaces),
             "skipped": skipped,
-            "truncated": len(log.get("entries", [])) > max_entries,
+            "truncated": truncated,
             "max_entries": max_entries,
         },
         "surfaces": surfaces,
@@ -230,6 +237,114 @@ def import_har_file(
         target=target,
         allow_private=allow_private,
         max_entries=max_entries,
+    )
+
+
+def har_seed_data(
+    data: Dict[str, Any],
+    *,
+    scope: ScopePolicy,
+    max_entries: int = 5000,
+    active_tests: bool = False,
+) -> Tuple[List[AttackSurface], Dict[str, Any]]:
+    """Build safe scanner seeds from HAR without replaying captured requests.
+
+    Only GET and HEAD entries become seeds. Parameter *names* are retained while
+    values are replaced with empty strings. Authorization/cookie material is not
+    copied. Active plugin testing stays disabled per surface unless explicitly
+    enabled, and HEAD entries remain passive-only even when active_tests=True.
+    """
+
+    entries, truncated = _har_entries(data, max_entries)
+    surfaces: List[AttackSurface] = []
+    seen = set()
+    skipped = {
+        "out_of_scope": 0,
+        "unsupported": 0,
+        "non_safe_method": 0,
+        "duplicate": 0,
+    }
+
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("request"), dict):
+            skipped["unsupported"] += 1
+            continue
+        request = entry["request"]
+        method = str(request.get("method", "GET") or "GET").upper()
+        if method not in _ALLOWED_METHODS:
+            skipped["unsupported"] += 1
+            continue
+        if method not in _SAFE_SEED_METHODS:
+            skipped["non_safe_method"] += 1
+            continue
+        raw_url = str(request.get("url", "") or "").strip()
+        try:
+            scope_url = _sanitized_url(raw_url, keep_query=True)
+        except ValueError:
+            skipped["unsupported"] += 1
+            continue
+        if not scope.is_allowed(scope_url, resolve_dns=False):
+            skipped["out_of_scope"] += 1
+            continue
+        sanitized = _surface_from_request(request, scope)
+        if sanitized is None:
+            skipped["unsupported"] += 1
+            continue
+
+        query_inputs = [
+            InputField(name=item["name"], value="", kind="query")
+            for item in sanitized.get("inputs", [])
+            if item.get("kind") == "query"
+        ]
+        surface = AttackSurface(
+            url=str(sanitized["url"]),
+            method=method,
+            params={str(name): "" for name in (sanitized.get("params") or {})},
+            inputs=query_inputs,
+            source="har-seed",
+            meta={
+                "sanitized": True,
+                "active_eligible": bool(active_tests and method == "GET"),
+                "har_seed": True,
+                "observed_header_names": sanitized.get("meta", {}).get(
+                    "observed_header_names", []
+                ),
+            },
+        )
+        key = surface.id
+        if key in seen:
+            skipped["duplicate"] += 1
+            continue
+        seen.add(key)
+        surfaces.append(surface)
+
+    return surfaces, {
+        "entries_seen": len(entries),
+        "surfaces": len(surfaces),
+        "active_eligible": sum(
+            1 for item in surfaces if item.meta.get("active_eligible", False)
+        ),
+        "skipped": skipped,
+        "truncated": truncated,
+        "max_entries": max_entries,
+        "replayed_requests": 0,
+        "sanitized": True,
+    }
+
+
+def load_har_seed_file(
+    path: str | Path,
+    *,
+    scope: ScopePolicy,
+    max_entries: int = 5000,
+    active_tests: bool = False,
+) -> Tuple[List[AttackSurface], Dict[str, Any]]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return har_seed_data(
+        data,
+        scope=scope,
+        max_entries=max_entries,
+        active_tests=active_tests,
     )
 
 
