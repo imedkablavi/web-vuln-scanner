@@ -135,6 +135,26 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             "scanner.crawler.javascript_discovery.max_script_bytes",
         )
 
+    har_seed = _mapping(
+        crawler.get("har_seed", {}),
+        "scanner.crawler.har_seed",
+    )
+    for key in ("enabled", "active_tests"):
+        if key in har_seed and not isinstance(har_seed[key], bool):
+            raise ValueError(f"scanner.crawler.har_seed.{key} must be boolean")
+    files = har_seed.get("files", [])
+    if not isinstance(files, list) or not all(isinstance(item, str) for item in files):
+        raise ValueError("scanner.crawler.har_seed.files must be a list of strings")
+    if "max_entries" in har_seed:
+        _positive_int(
+            har_seed["max_entries"],
+            "scanner.crawler.har_seed.max_entries",
+        )
+    if har_seed.get("enabled", False) and not any(str(item).strip() for item in files):
+        raise ValueError(
+            "scanner.crawler.har_seed.files requires at least one HAR file when enabled"
+        )
+
     concurrency = _mapping(scanner.get("concurrency", {}), "scanner.concurrency")
     for key in (
         "threads",
