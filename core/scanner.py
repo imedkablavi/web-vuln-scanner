@@ -1,4 +1,5 @@
 import concurrent.futures
+import re
 import threading
 import time
 from typing import Dict, List, Type
@@ -78,6 +79,20 @@ class ScannerEngine:
             1,
             int(self.config.get("max_findings_per_plugin", 50)),
         )
+        attack_policy = self.config.get("attack_policy", {}) or {}
+        self.skip_parameters = {
+            str(item).strip().lower()
+            for item in attack_policy.get("skip_parameters", []) or []
+            if str(item).strip()
+        }
+        self.skip_parameter_patterns = []
+        for pattern in attack_policy.get("skip_parameter_patterns", []) or []:
+            try:
+                self.skip_parameter_patterns.append(re.compile(str(pattern), re.I))
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid attack_policy skip_parameter_patterns regex {pattern!r}: {exc}"
+                ) from exc
         self.contract_mode = self.config.get("plugin_contract", "auto")
         self.debug = bool(self.config.get("debug", False))
         self.last_run_stats: Dict = {}
@@ -101,6 +116,14 @@ class ScannerEngine:
                 dict(response.headers) if hasattr(response, "headers") else {}
             ),
         }
+
+    def _testcase_allowed(self, testcase) -> bool:
+        parameter = str(getattr(testcase, "param", "") or "").strip()
+        if not parameter:
+            return True
+        if parameter.lower() in self.skip_parameters:
+            return False
+        return not any(pattern.search(parameter) for pattern in self.skip_parameter_patterns)
 
     def scan(self, surfaces: List[AttackSurface]) -> List[Finding]:
         logger.info(
@@ -126,6 +149,7 @@ class ScannerEngine:
             "baseline_example": None,
             "first_response_example": None,
             "errors": [],
+            "suppressed_testcases": 0,
         }
 
         def deadline_exceeded() -> bool:
@@ -157,6 +181,7 @@ class ScannerEngine:
                     plugin_name,
                     {
                         "generated_testcases": 0,
+                        "suppressed_testcases": 0,
                         "executed_requests": 0,
                         "reported_results": 0,
                         "findings_written": 0,
@@ -228,14 +253,22 @@ class ScannerEngine:
                     use_v2 = has_v2_contract
 
                 if use_v2:
-                    tests = plugin.generate_tests(surface, context)
-                    tests = tests[
+                    generated_tests = plugin.generate_tests(surface, context)
+                    generated_tests = generated_tests[
                         : plugin.max_tests_per_surface(
                             getattr(plugin, "config", {})
                         )
                     ]
+                    tests = [
+                        testcase
+                        for testcase in generated_tests
+                        if self._testcase_allowed(testcase)
+                    ]
+                    suppressed = len(generated_tests) - len(tests)
                     with stats_lock:
-                        dbg["generated_testcases"] += len(tests)
+                        dbg["generated_testcases"] += len(generated_tests)
+                        dbg["suppressed_testcases"] += suppressed
+                        debug_counts["suppressed_testcases"] += suppressed
                         if tests and dbg["sample_testcase"] is None:
                             first = tests[0]
                             dbg["sample_testcase"] = {
@@ -383,6 +416,13 @@ class ScannerEngine:
             "plugins_loaded": [plugin.name for plugin in self.plugins],
             "findings_total": len(all_findings),
             "findings_per_plugin": dict(plugin_finding_counts),
+            "suppressed_testcases": debug_counts["suppressed_testcases"],
+            "attack_policy": {
+                "skip_parameters": sorted(self.skip_parameters),
+                "skip_parameter_patterns": [
+                    pattern.pattern for pattern in self.skip_parameter_patterns
+                ],
+            },
             "status_counts": status_counts,
             "errors": debug_counts["errors"],
             "timed_out": stop_event.is_set(),
@@ -394,7 +434,8 @@ class ScannerEngine:
                 "Debug counters summary: "
                 f"surfaces={debug_counts['surfaces_total']} "
                 f"plugins={debug_counts['plugins_total']} "
-                f"findings={debug_counts['findings_total']}"
+                f"findings={debug_counts['findings_total']} "
+                f"suppressed={debug_counts['suppressed_testcases']}"
             )
             if debug_counts.get("baseline_example"):
                 logger.info(
@@ -407,6 +448,7 @@ class ScannerEngine:
             for plugin_name, stats in debug_counts["details"].items():
                 logger.info(
                     f"[{plugin_name}] generated_testcases={stats['generated_testcases']} "
+                    f"suppressed_testcases={stats['suppressed_testcases']} "
                     f"executed_requests={stats['executed_requests']} "
                     f"reported_results={stats['reported_results']} "
                     f"status_counts={stats['status_counts']} "
