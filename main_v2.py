@@ -3,6 +3,7 @@ import ipaddress
 import os
 import sys
 from copy import deepcopy
+from pathlib import Path
 from urllib.parse import urlparse
 
 import typer
@@ -16,12 +17,14 @@ from core.browser_auth_engine import BrowserAuthEngine
 from core.crawler import Crawler
 from core.event_bus import EventBus
 from core.exit_codes import scan_exit_code
+from core.postman_import import import_postman_file
 from core.replay_engine import ReplayEngine
 from core.reporter import Reporter
 from core.request_manager import RequestManager
 from core.rbac_verifier import RBACVerifier
 from core.scan_profiles import PROFILES, apply_profile
 from core.scanner import ScannerEngine
+from core.site_map import SiteMapBuilder
 from core.utils import logger, normalize_url, setup_logger
 from layers.api_checks import APIPostureScanner
 from layers.browser_verification import attach_browser_evidence
@@ -139,7 +142,64 @@ def _build_browser_login_summary(auth_summary):
     }
 
 
-async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=None):
+def _write_unified_site_map(
+    config,
+    requester,
+    surfaces,
+    *,
+    source_reports=None,
+    browser_report=None,
+):
+    crawler_cfg = config.get("crawler", {}) or {}
+    site_cfg = crawler_cfg.get("site_map", {}) or {}
+    if not site_cfg.get("enabled", True):
+        return {"enabled": False}
+
+    builder = SiteMapBuilder(
+        max_entries=int(site_cfg.get("max_entries", 5000) or 5000)
+    )
+    for report in source_reports or []:
+        builder.merge_report(report)
+    for surface in surfaces or []:
+        builder.record_surface(surface)
+
+    if browser_report:
+        for url in browser_report.get("pages_visited", []) or []:
+            if requester.scope_policy.is_allowed(url, resolve_dns=False):
+                builder.record_url(url, source="browser-page", requested=True)
+        for request in browser_report.get("requests", []) or []:
+            url = str((request or {}).get("url", "") or "")
+            method = str((request or {}).get("method", "GET") or "GET")
+            if url and requester.scope_policy.is_allowed(url, resolve_dns=False):
+                builder.record_url(
+                    url,
+                    source="browser-request",
+                    method=method,
+                    requested=True,
+                )
+
+    output_dir = Path(config.get("output", {}).get("directory", "reports"))
+    filename = str(site_cfg.get("output_file", "site_map.json") or "site_map.json")
+    path = Path(filename)
+    if not path.is_absolute():
+        path = output_dir / path
+    written = builder.write(path)
+    report = builder.to_dict()
+    return {
+        "enabled": True,
+        "path": str(written),
+        "summary": report.get("summary", {}),
+    }
+
+
+async def run_scan_async(
+    target,
+    config,
+    swagger_url,
+    graphql_url,
+    output_dir=None,
+    postman_files=None,
+):
     surfaces = []
     all_findings = []
     if output_dir:
@@ -259,6 +319,7 @@ async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=No
         browser_report = None
         workflow_instances = []
         workflow_findings = []
+        site_map_reports = []
         if browser_enabled:
             try:
                 try:
@@ -300,6 +361,7 @@ async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=No
             crawler = Crawler(req_manager, config["scanner"])
             crawler.crawl(target)
             surfaces.extend(crawler.get_surfaces())
+            site_map_reports.append(crawler.get_site_map_report())
             if "crawler" not in scan_meta["execution"]["collection_methods"]:
                 scan_meta["execution"]["collection_methods"].append("crawler")
             scan_meta["execution"]["crawler"] = {
@@ -329,6 +391,7 @@ async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=No
                     actor_crawler.crawl(target, actor=actor)
                     actor_surfaces = actor_crawler.get_surfaces()
                     surfaces.extend(actor_surfaces)
+                    site_map_reports.append(actor_crawler.get_site_map_report())
                     actor_crawl_meta[actor_id] = {
                         "pages_visited": len(
                             getattr(actor_crawler, "pages_visited", [])
@@ -347,15 +410,72 @@ async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=No
             api_surfaces = api_engine.load_swagger(s_url)
             surfaces.extend(api_surfaces)
             scan_meta["execution"]["collection_methods"].append("swagger")
-        if graphql_url:
-            gql_surfaces = api_engine.scan_graphql(graphql_url)
+        configured_graphql = config["scanner"].get("api", {}).get("graphql_url")
+        if graphql_url or configured_graphql:
+            gql_url = graphql_url or configured_graphql
+            gql_surfaces = api_engine.scan_graphql(gql_url)
             surfaces.extend(gql_surfaces)
             scan_meta["execution"]["collection_methods"].append("graphql")
+
+        postman_cfg = config["scanner"].get("api", {}).get("postman", {}) or {}
+        configured_postman_files = list(postman_cfg.get("files", []) or [])
+        selected_postman_files = []
+        for item in [*(postman_files or []), *configured_postman_files]:
+            path_text = str(item or "").strip()
+            if path_text and path_text not in selected_postman_files:
+                selected_postman_files.append(path_text)
+        postman_reports = []
+        for path_text in selected_postman_files:
+            try:
+                imported, import_report = import_postman_file(
+                    path_text,
+                    target=target,
+                    scope=req_manager.scope_policy,
+                    max_requests=int(postman_cfg.get("max_requests", 5000) or 5000),
+                    max_body_points=int(postman_cfg.get("max_body_points", 200) or 200),
+                    active_tests=bool(postman_cfg.get("active_tests", False)),
+                    allow_state_changing_methods=bool(
+                        postman_cfg.get("allow_state_changing_methods", False)
+                    ),
+                )
+                surfaces.extend(imported)
+                api_engine.endpoints.extend(imported)
+                postman_reports.append({"file": path_text, **import_report})
+            except Exception as exc:
+                postman_reports.append({"file": path_text, "error": str(exc)})
+                _mark_partial(
+                    scan_meta,
+                    f"Configured Postman collection could not be imported: {path_text}",
+                )
+        if selected_postman_files:
+            scan_meta["execution"]["collection_methods"].append("postman")
+            scan_meta["execution"]["layers"]["postman_import"] = {
+                "files": postman_reports,
+                "surfaces": sum(
+                    int(item.get("surfaces", 0) or 0)
+                    for item in postman_reports
+                    if isinstance(item, dict)
+                ),
+                "active_eligible": sum(
+                    int(item.get("active_eligible", 0) or 0)
+                    for item in postman_reports
+                    if isinstance(item, dict)
+                ),
+                "replayed_requests": 0,
+            }
+
         if getattr(api_engine, "errors", []):
             _mark_partial(scan_meta, "API parsing/scanning encountered errors.")
 
         surfaces = list({surface.id: surface for surface in surfaces}.values())
         scan_meta["execution"]["surfaces_discovered"] = len(surfaces)
+        scan_meta["execution"]["layers"]["site_map"] = _write_unified_site_map(
+            config["scanner"],
+            req_manager,
+            surfaces,
+            source_reports=site_map_reports,
+            browser_report=browser_report,
+        )
         discovery_urls = _collect_inventory_urls(
             target,
             surfaces,
@@ -568,6 +688,11 @@ def scan(
     ),
     swagger: str = typer.Option(None, help="URL to Swagger/OpenAPI JSON"),
     graphql: str = typer.Option(None, help="GraphQL endpoint"),
+    postman: list[str] = typer.Option(
+        [],
+        "--postman",
+        help="Postman Collection v2.x JSON file; repeat for multiple collections",
+    ),
     output_dir: str = typer.Option(
         "reports",
         "--output",
@@ -640,6 +765,7 @@ def scan(
                 swagger,
                 graphql,
                 output_dir=output_dir,
+                postman_files=postman,
             )
         )
     except KeyboardInterrupt:
