@@ -89,6 +89,18 @@ def _resolve_user_paths(config: Dict[str, Any], base_dir: Path) -> None:
         )
     har_seed["files"] = har_files
 
+    templates_cfg = scanner.setdefault("active_checks", {}).setdefault("templates", {})
+    template_directory = str(templates_cfg.get("directory", "") or "").strip()
+    if template_directory and not os.path.isabs(template_directory):
+        templates_cfg["directory"] = str((base_dir / template_directory).resolve())
+    template_files = []
+    for item in templates_cfg.get("files", []) or []:
+        value = str(item)
+        template_files.append(
+            value if os.path.isabs(value) else str((base_dir / value).resolve())
+        )
+    templates_cfg["files"] = template_files
+
 
 def materialize_runtime_config(config_path: str | None = None) -> Path:
     """Create a short-lived config with absolute resource paths for installed CLI use."""
