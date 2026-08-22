@@ -22,7 +22,10 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "crawler_enabled": True,
         "auth_verification": {"enabled": False},
         "workflows": {"enabled": False},
-        "active_checks": {"web": {"enabled": False}},
+        "active_checks": {
+            "web": {"enabled": False},
+            "xml": {"enabled": False},
+        },
         "passive_checks": {
             "data_exposure": {
                 "max_probe_paths": 0,
@@ -53,7 +56,9 @@ PROFILES: Dict[str, Dict[str, Any]] = {
                 "ssti": True,
                 "crlf": True,
                 "trace": True,
-            }
+                "ssrf_same_origin": True,
+            },
+            "xml": {"enabled": False},
         },
         "plugins": {
             "sqli": {
@@ -90,7 +95,9 @@ PROFILES: Dict[str, Dict[str, Any]] = {
                 "ssti": True,
                 "crlf": True,
                 "trace": True,
-            }
+                "ssrf_same_origin": True,
+            },
+            "xml": {"enabled": False},
         },
         "browser": {
             "interactions": {
