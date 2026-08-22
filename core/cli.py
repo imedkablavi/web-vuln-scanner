@@ -14,6 +14,7 @@ from .deadline import install_deadline
 from .plugin_catalog import get_plugin_catalog
 from .resources import materialize_runtime_config
 from .scan_profiles import PROFILES
+from .scan_strategies import STRATEGIES, strategy_summary
 
 
 _SEVERITY_RANK = {
@@ -269,6 +270,20 @@ def _apply_har_seed_override(runtime_path: str | Path, har_seed_path: str = "") 
     _write_runtime_config(runtime, config)
 
 
+def _apply_strategy_override(runtime_path: str | Path, strategy: str = "") -> None:
+    selected = str(strategy or "").strip().lower()
+    if not selected:
+        return
+    if selected not in STRATEGIES:
+        raise SystemExit(
+            f"Invalid --strategy: {strategy}. Choose from: {', '.join(sorted(STRATEGIES))}"
+        )
+    runtime = Path(runtime_path)
+    config = yaml.safe_load(runtime.read_text(encoding="utf-8")) or {}
+    config.setdefault("scanner", {})["strategy"] = selected
+    _write_runtime_config(runtime, config)
+
+
 def _validate_gate_value(value: str, ranks: dict[str, int], option: str) -> str:
     normalized = str(value or "any").strip().lower()
     if normalized != "any" and normalized not in ranks:
@@ -399,6 +414,24 @@ def _print_profiles(*, as_json: bool = False) -> None:
     _print_rows(("PROFILE", "PURPOSE"), rows)
 
 
+def _strategies_data() -> list[dict[str, str]]:
+    return [
+        {"name": name, "purpose": strategy_summary(name)}
+        for name in ("lightweight", "balanced", "deep")
+    ]
+
+
+def _print_strategies(*, as_json: bool = False) -> None:
+    strategies = _strategies_data()
+    if as_json:
+        print(json.dumps({"strategies": strategies}, indent=2, ensure_ascii=False))
+        return
+    rows = [(item["name"], item["purpose"]) for item in strategies]
+    print("Discovery strategies\n")
+    _print_rows(("STRATEGY", "PURPOSE"), rows)
+    print("\nStrategies change discovery breadth, not which active checks are authorized.")
+
+
 def _load_validated_config(config_path: str | None) -> tuple[Path, list[str]]:
     runtime_path = materialize_runtime_config(config_path)
     with open(runtime_path, "r", encoding="utf-8") as handle:
@@ -464,6 +497,10 @@ def _print_scan_help() -> None:
             "--profile NAME",
             "passive, safe-active, or full-authorized (default: passive)",
         ),
+        (
+            "--strategy NAME",
+            "lightweight, balanced, or deep discovery (default: balanced)",
+        ),
         ("--config PATH", "scanner YAML configuration"),
         ("--swagger URL", "OpenAPI/Swagger JSON endpoint"),
         ("--graphql URL", "GraphQL endpoint"),
@@ -494,7 +531,8 @@ def _print_overview() -> None:
     rows = [
         ("scan <target>", "run a scan"),
         ("checks [--json]", "list checks, maturity, and execution mode"),
-        ("profiles [--json]", "show built-in scan profiles"),
+        ("profiles [--json]", "show built-in safety profiles"),
+        ("strategies [--json]", "show discovery coverage strategies"),
         ("doctor", "check the installed runtime"),
         ("validate-config [PATH]", "validate scanner YAML without scanning"),
         ("version", "print the installed version"),
@@ -517,6 +555,9 @@ def _handle_meta_command(argv: list[str]) -> bool:
         return True
     if command == "profiles":
         _print_profiles(as_json="--json" in extras)
+        return True
+    if command == "strategies":
+        _print_strategies(as_json="--json" in extras)
         return True
     if command == "doctor":
         raise SystemExit(_doctor())
@@ -554,11 +595,13 @@ def main() -> None:
     checkpoint_path = _pop_option(sys.argv, "--checkpoint", "")
     resume_path = _pop_option(sys.argv, "--resume", "")
     har_seed_path = _pop_option(sys.argv, "--har-seed", "")
+    strategy = _pop_option(sys.argv, "--strategy", "")
     if checkpoint_path and resume_path:
         raise SystemExit("--checkpoint and --resume are mutually exclusive")
 
     output_dir = _option_value(sys.argv, "--output", "reports")
     runtime_path = _install_runtime_config(sys.argv)
+    _apply_strategy_override(runtime_path, strategy)
     _apply_checkpoint_override(
         runtime_path,
         checkpoint_path=checkpoint_path,
