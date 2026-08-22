@@ -246,6 +246,29 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                 allow_zero=True,
             )
 
+    active_templates = _mapping(
+        active_checks.get("templates", {}),
+        "scanner.active_checks.templates",
+    )
+    for key in ("enabled", "include_builtin"):
+        if key in active_templates and not isinstance(active_templates[key], bool):
+            raise ValueError(f"scanner.active_checks.templates.{key} must be boolean")
+    if "directory" in active_templates and not isinstance(
+        active_templates["directory"], str
+    ):
+        raise ValueError("scanner.active_checks.templates.directory must be a string")
+    template_files = active_templates.get("files", [])
+    if not isinstance(template_files, list) or not all(
+        isinstance(item, str) for item in template_files
+    ):
+        raise ValueError("scanner.active_checks.templates.files must be a list of strings")
+    for key in ("max_templates", "max_requests", "max_body_bytes"):
+        if key in active_templates:
+            _positive_int(
+                active_templates[key],
+                f"scanner.active_checks.templates.{key}",
+            )
+
     active_xml = _mapping(
         active_checks.get("xml", {}),
         "scanner.active_checks.xml",
