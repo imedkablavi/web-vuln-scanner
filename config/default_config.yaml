@@ -218,6 +218,13 @@ scanner:
       - id_token
     skip_parameter_patterns: []
 
+  checkpoint:
+    enabled: false
+    path: ""
+    resume: false
+    flush_every: 10
+    keep_completed: false
+
   plugins:
     sqli:
       enabled: false
