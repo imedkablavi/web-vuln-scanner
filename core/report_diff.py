@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -167,3 +169,90 @@ def regressions(diff: Dict[str, Any]) -> List[Dict[str, Any]]:
         if severity_worse or verification_worse:
             result.append(item)
     return result
+
+
+def _print_human(diff: Dict[str, Any]) -> None:
+    summary = diff.get("summary", {})
+    print(
+        "Scan diff: "
+        f"new={summary.get('new', 0)} "
+        f"fixed={summary.get('fixed', 0)} "
+        f"changed={summary.get('changed', 0)} "
+        f"unchanged={summary.get('unchanged', 0)}"
+    )
+    for label in ("new", "fixed"):
+        items = diff.get(label, []) or []
+        if not items:
+            continue
+        print(f"\n{label.upper()}")
+        for item in items:
+            parameter = f" param={item['parameter']}" if item.get("parameter") else ""
+            print(
+                f"- [{item.get('severity', '')}] {item.get('title') or item.get('type')} "
+                f"{item.get('url', '')}{parameter}"
+            )
+    if diff.get("changed"):
+        print("\nCHANGED")
+        for item in diff["changed"]:
+            before = item.get("before") or {}
+            after = item.get("after") or {}
+            print(
+                f"- {after.get('title') or after.get('type')} {after.get('url', '')}: "
+                f"{before.get('severity')}/{before.get('verification_status')} -> "
+                f"{after.get('severity')}/{after.get('verification_status')}"
+            )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="web-vuln-diff",
+        description="Compare two Web Vulnerability Scanner JSON reports using stable finding identities.",
+    )
+    parser.add_argument("baseline", help="Previous scan_report.json")
+    parser.add_argument("current", help="Current scan_report.json")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    parser.add_argument(
+        "--fail-on-new",
+        action="store_true",
+        help="Exit 1 when a new finding meets the severity threshold",
+    )
+    parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help="Exit 1 when an existing finding increases in severity or verification strength",
+    )
+    parser.add_argument(
+        "--min-severity",
+        default="low",
+        choices=["informational", "info", "low", "medium", "high", "critical"],
+        help="Minimum severity used by --fail-on-new (default: low)",
+    )
+    args = parser.parse_args()
+
+    try:
+        diff = compare_report_files(args.baseline, args.current)
+        gated_new = new_findings_at_or_above(diff, args.min_severity)
+        gated_regressions = regressions(diff)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Unable to compare reports: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    if args.json:
+        output = dict(diff)
+        output["gate"] = {
+            "minimum_severity": args.min_severity,
+            "new_at_or_above_threshold": len(gated_new),
+            "regressions": len(gated_regressions),
+        }
+        print(json.dumps(output, indent=2, ensure_ascii=False))
+    else:
+        _print_human(diff)
+
+    should_fail = (args.fail_on_new and bool(gated_new)) or (
+        args.fail_on_regression and bool(gated_regressions)
+    )
+    raise SystemExit(1 if should_fail else 0)
+
+
+if __name__ == "__main__":
+    main()
