@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from core.models import Finding
 from core.utils import logger, normalize_url
 from layers.active_web_probes import ActiveWebProbeScanner
+from layers.browser_xss import BrowserXSSVerifier
 from layers.cache_checks import check_cache_policy
 
 
@@ -40,6 +41,7 @@ class WebPostureScanner:
         self.skipped: List[str] = []
         self.snapshots: List[Dict[str, Any]] = []
         self.active_probe_meta: Dict[str, Any] = {}
+        self.browser_xss_meta: Dict[str, Any] = {}
 
     def scan(self, urls: List[str]) -> Tuple[List[Finding], Dict[str, Any]]:
         if not self.enabled:
@@ -69,11 +71,20 @@ class WebPostureScanner:
                 findings.append(cors_finding)
 
         active_probe_scanner = ActiveWebProbeScanner(self.requester, self.config)
-        active_findings, self.active_probe_meta = active_probe_scanner.scan(self.snapshots)
+        active_findings, self.active_probe_meta = active_probe_scanner.scan(
+            self.snapshots
+        )
         findings.extend(active_findings)
         if self.active_probe_meta.get("errors"):
             self.errors.extend(self.active_probe_meta["errors"])
         self.skipped.extend(self.active_probe_meta.get("skipped", []))
+
+        browser_xss = BrowserXSSVerifier(self.config)
+        xss_findings, self.browser_xss_meta = browser_xss.verify(self.snapshots)
+        findings.extend(xss_findings)
+        if self.browser_xss_meta.get("errors"):
+            self.errors.extend(self.browser_xss_meta["errors"])
+        self.skipped.extend(self.browser_xss_meta.get("skipped", []))
         return findings, self._meta()
 
     def _meta(self) -> Dict[str, Any]:
@@ -83,6 +94,7 @@ class WebPostureScanner:
             "skipped": self.skipped,
             "sampled_urls": [snapshot["url"] for snapshot in self.snapshots[:10]],
             "active_probes": self.active_probe_meta,
+            "browser_xss": self.browser_xss_meta,
         }
 
     def _unique_urls(self, urls: List[str]) -> List[str]:
