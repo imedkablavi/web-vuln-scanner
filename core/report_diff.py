@@ -53,12 +53,11 @@ def _parameter_hint(finding: Dict[str, Any]) -> str:
 
 
 def finding_fingerprint(finding: Dict[str, Any]) -> str:
-    """Build a stable issue identity that ignores volatile evidence fields."""
+    """Build a stable issue identity that ignores presentation and volatile evidence."""
 
     identity = {
         "plugin": str(finding.get("plugin", "")).strip().lower(),
         "type": str(finding.get("type", "")).strip().lower(),
-        "title": str(finding.get("title", "")).strip().lower(),
         "url": _canonical_url(str(finding.get("url", ""))),
         "parameter": _parameter_hint(finding).strip().lower(),
         "category": str(finding.get("category", "")).strip().lower(),
