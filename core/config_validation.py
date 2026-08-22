@@ -144,8 +144,9 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     for key in ("enabled", "ssti", "crlf", "trace"):
         if key in active_web and not isinstance(active_web[key], bool):
             raise ValueError(f"scanner.active_checks.web.{key} must be boolean")
-    if "max_urls" in active_web:
-        _positive_int(active_web["max_urls"], "scanner.active_checks.web.max_urls", allow_zero=True)
+    for key in ("max_urls", "max_requests"):
+        if key in active_web:
+            _positive_int(active_web[key], f"scanner.active_checks.web.{key}", allow_zero=True)
 
     output = _mapping(scanner.get("output", {}), "scanner.output")
     if "directory" in output and not isinstance(output["directory"], str):
