@@ -204,6 +204,20 @@ scanner:
       enabled: false
       max_requests: 3
 
+  attack_policy:
+    skip_parameters:
+      - csrf
+      - csrf_token
+      - _csrf
+      - authenticity_token
+      - password
+      - passwd
+      - token
+      - access_token
+      - refresh_token
+      - id_token
+    skip_parameter_patterns: []
+
   plugins:
     sqli:
       enabled: false
