@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 from core.models import Finding
+from layers.auth_token_checks import AuthTokenPostureScanner
 
 
 class APIPostureScanner:
@@ -11,12 +12,24 @@ class APIPostureScanner:
         self.layer_config = config.get("passive_checks", {}).get("api", {})
         self.enabled = bool(self.layer_config.get("enabled", True))
         self.skipped: List[str] = []
+        self.auth_token_meta: Dict[str, Any] = {}
 
     def scan(self, api_engine) -> Tuple[List[Finding], Dict[str, Any]]:
+        findings: List[Finding] = []
         if not self.enabled:
             self.skipped.append("API posture checks are disabled by configuration.")
-            return [], self._meta(api_engine)
+        else:
+            findings.extend(self._scan_api_inventory(api_engine))
 
+        requester = getattr(api_engine, "requester", None)
+        auth_manager = getattr(requester, "auth_session_manager", None)
+        token_scanner = AuthTokenPostureScanner(self.config)
+        token_findings, self.auth_token_meta = token_scanner.scan(auth_manager)
+        findings.extend(token_findings)
+        self.skipped.extend(self.auth_token_meta.get("skipped", []))
+        return findings, self._meta(api_engine)
+
+    def _scan_api_inventory(self, api_engine) -> List[Finding]:
         findings: List[Finding] = []
         swagger = getattr(api_engine, "swagger_inventory", None) or {}
         graphql = getattr(api_engine, "graphql_inventory", None) or {}
@@ -132,13 +145,13 @@ class APIPostureScanner:
                     ],
                 )
             )
-
-        return findings, self._meta(api_engine)
+        return findings
 
     def _meta(self, api_engine) -> Dict[str, Any]:
         return {
             "swagger_inventory": getattr(api_engine, "swagger_inventory", None),
             "graphql_inventory": getattr(api_engine, "graphql_inventory", None),
+            "auth_token_posture": self.auth_token_meta,
             "errors": getattr(api_engine, "errors", []),
             "skipped": self.skipped,
         }
