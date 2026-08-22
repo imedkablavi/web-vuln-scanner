@@ -205,6 +205,15 @@ scanner:
       trace: true
       ssrf_same_origin: true
 
+    templates:
+      enabled: false
+      include_builtin: true
+      directory: ""
+      files: []
+      max_templates: 10
+      max_requests: 10
+      max_body_bytes: 131072
+
     xml:
       enabled: false
       max_requests: 3
