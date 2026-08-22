@@ -33,16 +33,23 @@ def _scan_bytes(label: str, data: bytes, sentinels: list[bytes]) -> list[str]:
 def assert_no_secrets(root: Path, values: Iterable[str]) -> None:
     sentinels = [value.encode("utf-8") for value in values if value]
     failures = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
+    if root.is_file():
+        candidates = [root]
+    elif root.is_dir():
+        candidates = [path for path in root.rglob("*") if path.is_file()]
+    else:
+        raise FileNotFoundError(root)
+
+    for path in candidates:
         try:
             data = path.read_bytes()
         except OSError:
             continue
         failures.extend(_scan_bytes(str(path), data, sentinels))
     if failures:
-        raise RuntimeError("Secret sentinel leakage detected:\n" + "\n".join(failures))
+        raise RuntimeError(
+            "Secret sentinel leakage detected:\n" + "\n".join(failures)
+        )
 
 
 def main() -> None:
