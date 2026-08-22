@@ -7,6 +7,11 @@ from typing import Dict, List, Type
 from .models import AttackSurface, Finding
 from .plugin_catalog import get_plugin_metadata
 from .plugin_request import send_plugin_test
+from .scan_checkpoint import (
+    ScanCheckpoint,
+    count_findings_by_plugin,
+    testcase_fingerprint,
+)
 from .utils import get_content_hash, logger
 from plugins.base import BasePlugin
 from plugins.business_logic import BusinessLogicPlugin
@@ -95,6 +100,7 @@ class ScannerEngine:
                 ) from exc
         self.contract_mode = self.config.get("plugin_contract", "auto")
         self.debug = bool(self.config.get("debug", False))
+        self.checkpoint = ScanCheckpoint.from_scanner_config(self.config)
         self.last_run_stats: Dict = {}
         self.auth_harness = None
         self.rbac_verifier = None
@@ -129,7 +135,10 @@ class ScannerEngine:
         logger.info(
             f"Starting scan on {len(surfaces)} surfaces with {self.threads} threads."
         )
-        all_findings: List[Finding] = []
+        restored_findings = (
+            self.checkpoint.restored_findings() if self.checkpoint is not None else []
+        )
+        all_findings: List[Finding] = list(restored_findings)
         baseline_cache: Dict[str, Dict] = {}
         baseline_lock = threading.Lock()
         stats_lock = threading.Lock()
@@ -139,7 +148,10 @@ class ScannerEngine:
         deadline = (
             started_at + self.global_timeout if self.global_timeout > 0 else None
         )
-        plugin_finding_counts = {plugin.name: 0 for plugin in self.plugins}
+        restored_counts = count_findings_by_plugin(restored_findings)
+        plugin_finding_counts = {
+            plugin.name: restored_counts.get(plugin.name, 0) for plugin in self.plugins
+        }
         timeout_recorded = False
 
         debug_counts = {
@@ -150,6 +162,8 @@ class ScannerEngine:
             "first_response_example": None,
             "errors": [],
             "suppressed_testcases": 0,
+            "resumed_testcases": 0,
+            "restored_findings": len(restored_findings),
         }
 
         def deadline_exceeded() -> bool:
@@ -182,6 +196,7 @@ class ScannerEngine:
                     {
                         "generated_testcases": 0,
                         "suppressed_testcases": 0,
+                        "resumed_testcases": 0,
                         "executed_requests": 0,
                         "reported_results": 0,
                         "findings_written": 0,
@@ -287,6 +302,18 @@ class ScannerEngine:
                                 >= self.max_findings_per_plugin
                             ):
                                 break
+                        checkpoint_key = ""
+                        if self.checkpoint is not None:
+                            checkpoint_key = testcase_fingerprint(
+                                plugin.name,
+                                surface,
+                                testcase,
+                            )
+                            if self.checkpoint.is_completed(checkpoint_key):
+                                with stats_lock:
+                                    dbg["resumed_testcases"] += 1
+                                    debug_counts["resumed_testcases"] += 1
+                                continue
                         try:
                             response = send_plugin_test(
                                 self.requester,
@@ -318,6 +345,8 @@ class ScannerEngine:
                                 response,
                                 context,
                             )
+                            finding_for_checkpoint = None
+                            checkpoint_complete = not verification.is_verified
                             if verification.is_verified:
                                 with stats_lock:
                                     dbg["reported_results"] += 1
@@ -336,8 +365,19 @@ class ScannerEngine:
                                         surface,
                                     )
                                     local_findings.append(finding)
+                                    finding_for_checkpoint = finding
+                                    checkpoint_complete = True
                                     with stats_lock:
                                         dbg["findings_written"] += 1
+                            if (
+                                self.checkpoint is not None
+                                and checkpoint_key
+                                and checkpoint_complete
+                            ):
+                                self.checkpoint.record_completed(
+                                    checkpoint_key,
+                                    finding_for_checkpoint,
+                                )
                         except Exception as exc:
                             message = (
                                 f"Plugin {plugin.name} failed on {surface.url}: {exc}"
@@ -405,6 +445,12 @@ class ScannerEngine:
             # in-flight network operation with connect/read timeouts.
             executor.shutdown(wait=True, cancel_futures=True)
 
+        checkpoint_summary = {"enabled": False}
+        if self.checkpoint is not None:
+            checkpoint_completed = not stop_event.is_set() and not debug_counts["errors"]
+            self.checkpoint.finalize(completed=checkpoint_completed)
+            checkpoint_summary = self.checkpoint.summary()
+
         debug_counts["findings_total"] = len(all_findings)
         status_counts: Dict[str, int] = {}
         for finding in all_findings:
@@ -417,6 +463,9 @@ class ScannerEngine:
             "findings_total": len(all_findings),
             "findings_per_plugin": dict(plugin_finding_counts),
             "suppressed_testcases": debug_counts["suppressed_testcases"],
+            "resumed_testcases": debug_counts["resumed_testcases"],
+            "restored_findings": debug_counts["restored_findings"],
+            "checkpoint": checkpoint_summary,
             "attack_policy": {
                 "skip_parameters": sorted(self.skip_parameters),
                 "skip_parameter_patterns": [
@@ -435,7 +484,8 @@ class ScannerEngine:
                 f"surfaces={debug_counts['surfaces_total']} "
                 f"plugins={debug_counts['plugins_total']} "
                 f"findings={debug_counts['findings_total']} "
-                f"suppressed={debug_counts['suppressed_testcases']}"
+                f"suppressed={debug_counts['suppressed_testcases']} "
+                f"resumed={debug_counts['resumed_testcases']}"
             )
             if debug_counts.get("baseline_example"):
                 logger.info(
@@ -449,6 +499,7 @@ class ScannerEngine:
                 logger.info(
                     f"[{plugin_name}] generated_testcases={stats['generated_testcases']} "
                     f"suppressed_testcases={stats['suppressed_testcases']} "
+                    f"resumed_testcases={stats['resumed_testcases']} "
                     f"executed_requests={stats['executed_requests']} "
                     f"reported_results={stats['reported_results']} "
                     f"status_counts={stats['status_counts']} "
