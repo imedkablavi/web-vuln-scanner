@@ -33,14 +33,29 @@ def _safe_netloc(parsed) -> str:
     return f"{rendered_host}:{port}" if port is not None else rendered_host
 
 
+def _sanitized_url(value: str, *, keep_query: bool = True) -> str:
+    parsed = urlsplit(str(value or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must be an absolute http(s) URL")
+    return urlunsplit(
+        (
+            parsed.scheme,
+            _safe_netloc(parsed),
+            parsed.path or "/",
+            parsed.query if keep_query else "",
+            "",
+        )
+    )
+
+
 def _scope_config(target: str, *, allow_private: bool = False) -> Dict[str, Any]:
     parsed = urlsplit(target)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("target must be an absolute http(s) URL")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("target must not contain embedded URL credentials")
-    safe_netloc = _safe_netloc(parsed)
-    safe_target = urlunsplit((parsed.scheme, safe_netloc, parsed.path or "/", "", ""))
+    safe_target = _sanitized_url(target, keep_query=False)
+    safe_netloc = urlsplit(safe_target).netloc
     return {
         "target": safe_target,
         "scope": {
@@ -56,10 +71,7 @@ def _scope_config(target: str, *, allow_private: bool = False) -> Dict[str, Any]
 
 
 def _base_url(value: str) -> str:
-    parsed = urlsplit(str(value or ""))
-    return urlunsplit(
-        (parsed.scheme, _safe_netloc(parsed), parsed.path or "/", "", "")
-    )
+    return _sanitized_url(value, keep_query=False)
 
 
 def _header_names(headers: Iterable[Dict[str, Any]]) -> List[str]:
@@ -97,7 +109,12 @@ def _surface_from_request(request: Dict[str, Any], scope: ScopePolicy) -> Dict[s
     method = str(request.get("method", "GET") or "GET").upper()
     if method not in _ALLOWED_METHODS or not raw_url:
         return None
-    if not scope.is_allowed(raw_url, resolve_dns=False):
+
+    try:
+        scope_url = _sanitized_url(raw_url, keep_query=True)
+    except ValueError:
+        return None
+    if not scope.is_allowed(scope_url, resolve_dns=False):
         return None
 
     parsed = urlsplit(raw_url)
@@ -160,12 +177,17 @@ def import_har_data(
             skipped["unsupported"] += 1
             continue
         request = entry["request"]
-        raw_url = str(request.get("url", "") or "")
+        raw_url = str(request.get("url", "") or "").strip()
         method = str(request.get("method", "GET") or "GET").upper()
         if method not in _ALLOWED_METHODS or not raw_url:
             skipped["unsupported"] += 1
             continue
-        if not scope.is_allowed(raw_url, resolve_dns=False):
+        try:
+            scope_url = _sanitized_url(raw_url, keep_query=True)
+        except ValueError:
+            skipped["unsupported"] += 1
+            continue
+        if not scope.is_allowed(scope_url, resolve_dns=False):
             skipped["out_of_scope"] += 1
             continue
         surface = _surface_from_request(request, scope)
