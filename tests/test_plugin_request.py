@@ -17,7 +17,7 @@ class Requester:
         return object()
 
 
-def testcase(kind, param="probe", payload="PAYLOAD", **kwargs):
+def _case(kind, param="probe", payload="PAYLOAD", **kwargs):
     return TestCase(
         plugin="fixture",
         surface_id="surface",
@@ -35,7 +35,7 @@ def test_query_injection_preserves_other_parameters():
         method="GET",
         params={"probe": "old", "lang": "en"},
     )
-    send_plugin_test(requester, surface, testcase("query"))
+    send_plugin_test(requester, surface, _case("query"))
 
     method, _url, kwargs = requester.calls[-1]
     assert method == "GET"
@@ -55,7 +55,7 @@ def test_body_injection_uses_json_for_json_surface():
         ],
         meta={"content_type": "application/json"},
     )
-    send_plugin_test(requester, surface, testcase("body"))
+    send_plugin_test(requester, surface, _case("body"))
 
     method, _url, kwargs = requester.calls[-1]
     assert method == "POST"
@@ -73,7 +73,7 @@ def test_header_and_cookie_injection_target_the_declared_kind():
     send_plugin_test(
         requester,
         header_surface,
-        testcase("header", param="X-Test"),
+        _case("header", param="X-Test"),
     )
     assert requester.calls[-1][2]["headers"]["X-Test"] == "PAYLOAD"
 
@@ -85,7 +85,7 @@ def test_header_and_cookie_injection_target_the_declared_kind():
     send_plugin_test(
         requester,
         cookie_surface,
-        testcase("cookie", param="pref"),
+        _case("cookie", param="pref"),
     )
     assert requester.calls[-1][2]["cookies"]["pref"] == "PAYLOAD"
 
@@ -100,7 +100,7 @@ def test_method_override_and_redirect_policy_are_forwarded():
     send_plugin_test(
         requester,
         surface,
-        testcase(
+        _case(
             "body",
             method_override="PATCH",
             allow_redirects=False,
@@ -122,7 +122,7 @@ def test_path_injection_replaces_discovered_segment_only():
     send_plugin_test(
         requester,
         surface,
-        testcase("path", param="user_id", payload="a/b"),
+        _case("path", param="user_id", payload="a/b"),
     )
     _method, url, _kwargs = requester.calls[-1]
     assert url == "https://example.test/users/a%2Fb/profile?view=full"
@@ -132,7 +132,7 @@ def test_unknown_input_kind_is_rejected_before_request():
     requester = Requester()
     surface = AttackSurface(url="https://example.test/", method="GET")
     try:
-        send_plugin_test(requester, surface, testcase("unknown"))
+        send_plugin_test(requester, surface, _case("unknown"))
     except ValueError as exc:
         assert "Unsupported plugin input kind" in str(exc)
     else:
