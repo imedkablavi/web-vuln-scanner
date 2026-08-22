@@ -22,6 +22,7 @@ class TestCase:
     allow_redirects: bool | None = None
     notes: str | None = None
     baseline_key: str = ""
+    input_path: str = ""  # canonical nested insertion path when available
 
 
 @dataclass
