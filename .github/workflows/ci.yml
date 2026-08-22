@@ -53,7 +53,10 @@ jobs:
           web-vuln-scanner --help
           web-vuln-scanner version
           web-vuln-scanner checks
+          web-vuln-scanner checks --json >/tmp/checks.json
           web-vuln-scanner profiles
+          web-vuln-scanner profiles --json >/tmp/profiles.json
+          web-vuln-scanner validate-config config/default_config.yaml
           web-vuln-scanner doctor
           web-vuln-profile --help
           web-vuln-sarif --help
@@ -103,7 +106,10 @@ jobs:
           /tmp/wheel-test/bin/web-vuln-scanner --help
           /tmp/wheel-test/bin/web-vuln-scanner version
           /tmp/wheel-test/bin/web-vuln-scanner checks
+          /tmp/wheel-test/bin/web-vuln-scanner checks --json >/tmp/wheel-checks.json
           /tmp/wheel-test/bin/web-vuln-scanner profiles
+          /tmp/wheel-test/bin/web-vuln-scanner profiles --json >/tmp/wheel-profiles.json
+          /tmp/wheel-test/bin/web-vuln-scanner validate-config
           /tmp/wheel-test/bin/web-vuln-scanner doctor
           /tmp/wheel-test/bin/web-vuln-profile --help
           /tmp/wheel-test/bin/web-vuln-sarif --help
@@ -159,6 +165,7 @@ jobs:
         run: |
           rm -f .coverage .coverage.*
           SMOKE_COVERAGE=1 python smoke/run_smoke.py
+          python -m coverage run --parallel-mode --source=core,layers,plugins,workflows smoke/feature_probe_smoke.py
           python -m coverage combine
           python -m coverage report
           python -m coverage xml -o smoke_out/integration-coverage.xml
