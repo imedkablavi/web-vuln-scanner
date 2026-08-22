@@ -1,6 +1,7 @@
 scanner:
   target: ""
   profile: passive
+
   scope:
     allowlist: []
     include_domains: []
@@ -8,10 +9,12 @@ scanner:
     allow_private: false
     resolve_dns: true
     max_depth: 2
+
   crawler:
     max_depth: 3
     max_urls: 2000
     max_url_length: 2048
+
   concurrency:
     threads: 5
     per_host_concurrency: 2
@@ -19,10 +22,12 @@ scanner:
     timeout: 10
     max_retries: 3
     global_timeout_seconds: 600
+
   plugin_contract: "v2"
   browser_enabled: false
   crawler_enabled: true
   debug: false
+
   browser:
     headless: true
     slow_mo: 0
@@ -41,9 +46,11 @@ scanner:
       network_idle_ms: 1500
     max_pages: 20
     max_actions_per_page: 15
+
   auth:
     cookies: {}
     headers: {}
+
   auth_verification:
     enabled: false
     default_comparison_mode: semantic
@@ -57,7 +64,7 @@ scanner:
         auth_type: cookie
         role: low
         notes:
-          - "Example actor. Provide authorized test credentials through environment variables."
+          - "Sample actor. Set the environment variables below only for an authorized test account."
         enabled: true
         auth:
           auth_scheme: form_login
@@ -77,12 +84,13 @@ scanner:
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
+
       - actor_id: peer_user
         display_name: Peer User
         auth_type: cookie
         role: low
         notes:
-          - "Example actor. Provide authorized test credentials through environment variables."
+          - "Sample browser-login actor for cross-account authorization checks."
         enabled: true
         auth:
           auth_scheme: browser_form_login
@@ -109,12 +117,13 @@ scanner:
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
+
       - actor_id: admin_user
         display_name: Admin User
         auth_type: cookie
         role: admin
         notes:
-          - "Example actor. Provide authorized test credentials through environment variables."
+          - "Sample elevated actor. Use a disposable authorized account where possible."
         enabled: true
         auth:
           auth_scheme: form_login
@@ -134,13 +143,14 @@ scanner:
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
+
       - actor_id: api_user
         display_name: API User
         auth_type: bearer
         role: api
         enabled: false
         notes:
-          - "Example bearer actor. Use only on authorized test APIs."
+          - "Sample bearer-token actor for API authorization tests."
         auth:
           auth_scheme: bearer_with_refresh
           token_url: "http://target.local/api/login"
@@ -161,18 +171,30 @@ scanner:
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
+
   rbac_matrix_file: "config/rbac_matrix.yaml"
+
   workflows:
     enabled: false
     directory: "workflows/default"
     files: []
     replay_verified_only: true
+
+  active_checks:
+    web:
+      enabled: false
+      max_urls: 10
+      ssti: true
+      crlf: true
+      trace: true
+
   plugins:
     sqli:
       enabled: false
       max_tests_per_surface: 3
       time_based: false
       min_length_delta_ratio: 0.05
+
     business_logic:
       enabled: false
       idor:
@@ -182,26 +204,36 @@ scanner:
         min_length_delta_ratio: 0.05
         max_tests_per_surface: 3
         allow_uuid: false
+
     xss_reflected:
       enabled: false
-    lfi:
-      enabled: false
-    cmd_injection:
-      enabled: false
+      max_tests_per_surface: 4
+
     open_redirect:
       enabled: false
+      max_tests_per_surface: 2
+
+    lfi:
+      enabled: false
+
+    cmd_injection:
+      enabled: false
+
   output:
     format: ["json", "html"]
     file: "scan_report"
     directory: "reports"
+
   api:
     swagger_url: ""
     graphql_url: ""
+
   passive_checks:
     web:
       enabled: true
       max_urls: 25
       origin_probe: "https://audit.invalid"
+
     data_exposure:
       enabled: true
       max_probe_paths: 5
@@ -212,13 +244,17 @@ scanner:
         - "/.git/HEAD"
         - "/backup.zip"
         - "/debug/config.json"
+
     api:
       enabled: true
+
     dns_tls:
       enabled: true
       timeout: 3
+
   verified_only: false
   max_findings_per_plugin: 50
+
   request:
     timeouts:
       connect: 10
@@ -226,6 +262,7 @@ scanner:
     max_retries: 3
     max_redirects: 5
     follow_redirects: false
+
 logging:
   level: "INFO"
   file: "scanner.log"
