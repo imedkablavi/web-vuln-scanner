@@ -146,6 +146,25 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             browser["auth_timeout_seconds"],
             "scanner.browser.auth_timeout_seconds",
         )
+    xss_verification = _mapping(
+        browser.get("xss_verification", {}),
+        "scanner.browser.xss_verification",
+    )
+    if "enabled" in xss_verification and not isinstance(
+        xss_verification["enabled"], bool
+    ):
+        raise ValueError("scanner.browser.xss_verification.enabled must be boolean")
+    if "max_tests" in xss_verification:
+        _positive_int(
+            xss_verification["max_tests"],
+            "scanner.browser.xss_verification.max_tests",
+            allow_zero=True,
+        )
+    if "timeout_ms" in xss_verification:
+        _positive_int(
+            xss_verification["timeout_ms"],
+            "scanner.browser.xss_verification.timeout_ms",
+        )
 
     request = _mapping(scanner.get("request", {}), "scanner.request")
     if "max_redirects" in request:
