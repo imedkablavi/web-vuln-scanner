@@ -1,6 +1,7 @@
 scanner:
   target: ""
   profile: passive
+  strategy: balanced
 
   scope:
     allowlist: []
@@ -22,7 +23,7 @@ scanner:
       max_file_bytes: 2097152
     site_map:
       enabled: true
-      output_file: "crawler_site_map.json"
+      output_file: "site_map.json"
       max_entries: 5000
     javascript_discovery:
       enabled: true
