@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from core import cli
@@ -16,18 +18,51 @@ def test_checks_command_lists_new_checks(capsys):
     assert "WSTG-INPV-18" in output
 
 
+def test_checks_json_is_machine_readable(capsys):
+    assert cli._handle_meta_command(["web-vuln-scanner", "checks", "--json"]) is True
+    payload = json.loads(capsys.readouterr().out)
+    names = {item["name"] for item in payload["checks"]}
+    assert {"ssti", "crlf", "trace", "sqli", "open_redirect"} <= names
+
+
 def test_profiles_command_explains_safety_modes(capsys):
     assert cli._handle_meta_command(["web-vuln-scanner", "profiles"]) is True
     output = capsys.readouterr().out
     assert "passive" in output
     assert "safe-active" in output
     assert "full-authorized" in output
-    assert "no payload injection" in output.lower()
+    assert "no active payloads" in output.lower()
+
+
+def test_profiles_json_is_machine_readable(capsys):
+    assert cli._handle_meta_command(["web-vuln-scanner", "profiles", "--json"]) is True
+    payload = json.loads(capsys.readouterr().out)
+    assert {item["name"] for item in payload["profiles"]} == {
+        "passive",
+        "safe-active",
+        "full-authorized",
+    }
+
+
+def test_scan_help_is_owned_by_wrapper(capsys):
+    assert cli._handle_meta_command(["web-vuln-scanner", "scan", "--help"]) is True
+    output = capsys.readouterr().out
+    assert "Usage:" in output
+    assert "--fail-on-severity" in output
+    assert "Exit codes:" in output
+    assert "Evidence-first" not in output
 
 
 def test_version_command_is_available(capsys):
     assert cli._handle_meta_command(["web-vuln-scanner", "version"]) is True
     assert capsys.readouterr().out.strip()
+
+
+def test_validate_config_command_accepts_packaged_default(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli._handle_meta_command(["web-vuln-scanner", "validate-config"])
+    assert exc.value.code == 0
+    assert "Config OK:" in capsys.readouterr().out
 
 
 def test_doctor_returns_success_for_core_runtime(capsys):
