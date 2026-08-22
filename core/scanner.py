@@ -5,6 +5,7 @@ from typing import Dict, List, Type
 
 from .models import AttackSurface, Finding
 from .plugin_catalog import get_plugin_metadata
+from .plugin_request import send_plugin_test
 from .utils import get_content_hash, logger
 from plugins.base import BasePlugin
 from plugins.business_logic import BusinessLogicPlugin
@@ -242,6 +243,7 @@ class ScannerEngine:
                                 "kind": first.kind,
                                 "payload": first.payload,
                                 "method_override": first.method_override,
+                                "allow_redirects": first.allow_redirects,
                             }
                     for testcase in tests:
                         if deadline_exceeded():
@@ -253,18 +255,25 @@ class ScannerEngine:
                             ):
                                 break
                         try:
-                            response = self.requester.send_surface(
+                            response = send_plugin_test(
+                                self.requester,
                                 surface,
-                                testcase.param,
-                                testcase.payload,
+                                testcase,
                             )
                             with stats_lock:
                                 dbg["executed_requests"] += 1
-                                if response is not None and dbg["first_response"] is None:
+                                if (
+                                    response is not None
+                                    and dbg["first_response"] is None
+                                ):
                                     dbg["first_response"] = {
-                                        "status": getattr(response, "status_code", None),
+                                        "status": getattr(
+                                            response, "status_code", None
+                                        ),
                                         "length": len(response.text or ""),
-                                        "hash": get_content_hash(response.text or ""),
+                                        "hash": get_content_hash(
+                                            response.text or ""
+                                        ),
                                     }
                                     if debug_counts["first_response_example"] is None:
                                         debug_counts["first_response_example"] = dbg[
