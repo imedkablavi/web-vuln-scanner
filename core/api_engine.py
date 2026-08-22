@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import quote, urljoin
 
 from .insertion_points import schema_inputs
@@ -18,6 +19,7 @@ _HTTP_METHODS = {
     "head",
     "trace",
 }
+_SERVER_VARIABLE_RE = re.compile(r"\{([^{}]+)\}")
 
 
 class APIEngine:
@@ -80,6 +82,39 @@ class APIEngine:
                 return None
             current = current[token]
         return current if isinstance(current, dict) else None
+
+    @staticmethod
+    def _expand_server(server):
+        if not isinstance(server, dict):
+            server = {"url": "/"}
+        raw = str(server.get("url", "/") or "/")
+        variables = server.get("variables", {}) or {}
+        if not isinstance(variables, dict):
+            variables = {}
+        for name in _SERVER_VARIABLE_RE.findall(raw):
+            definition = variables.get(name, {}) or {}
+            if not isinstance(definition, dict) or "default" not in definition:
+                raise ValueError(
+                    f"OpenAPI server variable '{name}' is missing its required default"
+                )
+            raw = raw.replace("{" + name + "}", str(definition.get("default", "")))
+        return raw
+
+    @classmethod
+    def _openapi_server_base(cls, swagger_url, server):
+        return urljoin(swagger_url, cls._expand_server(server))
+
+    @classmethod
+    def _operation_server_base(cls, swagger_url, spec, path_item, operation):
+        candidates = (
+            operation.get("servers")
+            or path_item.get("servers")
+            or spec.get("servers")
+            or [{"url": "/"}]
+        )
+        if not isinstance(candidates, list) or not candidates:
+            candidates = [{"url": "/"}]
+        return cls._openapi_server_base(swagger_url, candidates[0])
 
     def _schema_inputs(self, schema, spec, *, kind="body"):
         return schema_inputs(
@@ -182,12 +217,12 @@ class APIEngine:
                 return []
 
             spec = resp.json()
-            if spec.get("openapi"):
-                servers = spec.get("servers") or []
-                server_url = servers[0].get("url", "") if servers else ""
-                base_url = (
-                    urljoin(swagger_url, server_url) if server_url else swagger_url
-                )
+            is_openapi = bool(spec.get("openapi"))
+            if is_openapi:
+                servers = spec.get("servers") or [{"url": "/"}]
+                if not isinstance(servers, list) or not servers:
+                    servers = [{"url": "/"}]
+                base_url = self._openapi_server_base(swagger_url, servers[0])
                 spec_version = spec.get("openapi")
             else:
                 base_path = spec.get("basePath", "")
@@ -204,6 +239,7 @@ class APIEngine:
             discovered = []
             input_locations = {}
             input_paths_total = 0
+            skipped_server_scope = 0
             for path, methods in paths.items():
                 if not isinstance(methods, dict):
                     continue
@@ -229,11 +265,22 @@ class APIEngine:
                         if item.kind == "query"
                     }
                     rendered_path = self._materialize_path(path, inputs)
+                    operation_base = (
+                        self._operation_server_base(
+                            swagger_url,
+                            spec,
+                            methods,
+                            details,
+                        )
+                        if is_openapi
+                        else base_url
+                    )
                     full_url = urljoin(
-                        base_url.rstrip("/") + "/",
+                        operation_base.rstrip("/") + "/",
                         str(rendered_path).lstrip("/"),
                     )
                     if not self._in_scope(full_url):
+                        skipped_server_scope += 1
                         continue
                     operations_total += 1
                     security = details.get("security", spec.get("security", []))
@@ -252,7 +299,7 @@ class APIEngine:
                         if item.path:
                             input_paths_total += 1
 
-                    if not request_content_types and not spec.get("openapi"):
+                    if not request_content_types and not is_openapi:
                         request_content_types = list(
                             details.get("consumes", spec.get("consumes", [])) or []
                         )
@@ -261,7 +308,7 @@ class APIEngine:
                         if "application/json" in request_content_types
                         else (request_content_types[0] if request_content_types else "")
                     )
-                    if not spec.get("openapi") and body_inputs:
+                    if not is_openapi and body_inputs:
                         if selected_content_type in {
                             "application/x-www-form-urlencoded",
                             "multipart/form-data",
@@ -302,6 +349,7 @@ class APIEngine:
                             "input_names": [item.name for item in inputs],
                             "input_paths": [item.path or item.name for item in inputs],
                             "active_eligible": active_eligible,
+                            "server_base": operation_base,
                         },
                     )
                     self.endpoints.append(surface)
@@ -319,6 +367,7 @@ class APIEngine:
                 "surfaces_with_inputs": sum(
                     1 for surface in discovered if surface.inputs or surface.params
                 ),
+                "skipped_out_of_scope_server_operations": skipped_server_scope,
             }
             logger.info(
                 f"Discovered {len(discovered)} API endpoints from Swagger."
