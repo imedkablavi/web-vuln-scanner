@@ -126,7 +126,49 @@ class RBACResult:
 
     def __post_init__(self):
         if self.evidence is None:
-            self.evidence = {"policy": {"source": "fixture"}}
+            self.evidence = {
+                "auth": {
+                    "baseline_actor_id": "owner",
+                    "comparison_actor_id": "peer",
+                    "authorization_signal": "policy_violation_verified",
+                    "actor_comparison": {
+                        "policy_expectations": {"owner": "allow", "peer": "deny"}
+                    },
+                },
+                "auth_state": {
+                    "actors": {
+                        "owner": {
+                            "actor_ready": True,
+                            "session_status": "authenticated",
+                        },
+                        "peer": {
+                            "actor_ready": True,
+                            "session_status": "authenticated",
+                        },
+                    }
+                },
+                "actor_scope": ["owner", "peer"],
+                "policy": {
+                    "source": "fixture",
+                    "verdict": (
+                        "violates_policy_verified"
+                        if self.decision == "violates_policy_verified"
+                        else "matches_policy"
+                    ),
+                    "expectations": {"owner": "allow", "peer": "deny"},
+                    "ownership": {"owner_actor_id": "owner"},
+                },
+                "observed_access": {
+                    "owner": {"observed": "allow"},
+                    "peer": {
+                        "observed": (
+                            "allow"
+                            if self.decision == "violates_policy_verified"
+                            else "deny"
+                        )
+                    },
+                },
+            }
 
 
 class RBACVerifier:
@@ -144,13 +186,20 @@ def test_business_logic_policy_verified_bypass_is_verified():
         testcase,
         baseline(),
         Response("candidate"),
-        {"surface": surface(), "rbac_verifier": RBACVerifier("violates_policy_verified")},
+        {
+            "surface": surface(),
+            "rbac_verifier": RBACVerifier("violates_policy_verified"),
+        },
     )
     assert result.is_verified is True
     assert result.verification_status == "verified"
     finding = plugin.build_finding(testcase, result, surface())
     assert finding.severity == "HIGH"
+    assert finding.verification_status == "verified"
     assert finding.reproducible is True
+    assert finding.deterministic_verification is True
+    assert finding.baseline_actor_id == "owner"
+    assert finding.comparison_actor_id == "peer"
 
 
 def test_business_logic_policy_match_is_not_reported():
