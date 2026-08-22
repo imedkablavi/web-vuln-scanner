@@ -24,11 +24,30 @@ class XSSReflectedPlugin(BasePlugin):
         return bool(surface.params or any(item.kind in self.supported_input_kinds for item in surface.inputs))
 
     def generate_tests(self, surface: AttackSurface, context: Dict) -> List[TestCase]:
-        targets = [(name, "query") for name in surface.params]
-        targets.extend((item.name, item.kind) for item in surface.inputs if item.kind in self.supported_input_kinds)
+        targets = [(name, "query", name) for name in surface.params]
+        targets.extend(
+            (
+                item.name,
+                item.kind,
+                str(getattr(item, "path", "") or item.name),
+            )
+            for item in surface.inputs
+            if item.kind in self.supported_input_kinds
+        )
+        deduped = []
+        seen = set()
+        for name, kind, path in targets:
+            key = (kind, path or name)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((name, kind, path))
+
         tests: List[TestCase] = []
-        for name, kind in targets:
-            marker = hashlib.sha256(f"{surface.id}:{name}:{kind}".encode("utf-8")).hexdigest()[:12]
+        for name, kind, input_path in deduped:
+            marker = hashlib.sha256(
+                f"{surface.id}:{name}:{kind}:{input_path}".encode("utf-8")
+            ).hexdigest()[:12]
             element = f'<wvs-probe data-wvs="{marker}"></wvs-probe>'
             for payload in (element, f'\">{element}'):
                 tests.append(
@@ -39,6 +58,7 @@ class XSSReflectedPlugin(BasePlugin):
                         kind=kind,
                         payload=payload,
                         notes=f"markup-canary:{marker}",
+                        input_path=input_path if input_path != name else "",
                     )
                 )
                 if len(tests) >= self.max_tests_per_surface(self.config):
@@ -78,12 +98,18 @@ class XSSReflectedPlugin(BasePlugin):
             "HIGH",
             {
                 "parameter": testcase.param,
+                "insertion_path": testcase.input_path,
                 "marker": marker,
                 "status": response.status_code,
                 "parsed_element": "wvs-probe",
                 "context": "html-markup",
             },
-            {"param": testcase.param, "payload": testcase.payload, "kind": testcase.kind},
+            {
+                "param": testcase.param,
+                "input_path": testcase.input_path,
+                "payload": testcase.payload,
+                "kind": testcase.kind,
+            },
             severity="MEDIUM",
             verification_status="detected",
             rationale="The response parser reconstructed the injected canary as an HTML element. Script execution was not attempted or claimed.",
@@ -105,6 +131,11 @@ class XSSReflectedPlugin(BasePlugin):
             verification_status=vres.verification_status,
             scanner_mode="safe-active-web",
             reproducible=True,
-            target={"source": surface.source, "method": surface.method, "parameter": testcase.param},
+            target={
+                "source": surface.source,
+                "method": surface.method,
+                "parameter": testcase.param,
+                "insertion_path": testcase.input_path,
+            },
             notes=[vres.rationale] if vres.rationale else [],
         )
