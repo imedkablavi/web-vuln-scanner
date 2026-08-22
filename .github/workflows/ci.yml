@@ -149,12 +149,16 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Local smoke target with integration coverage
         run: |
-          python -m coverage run --source=core,layers,plugins,workflows smoke/run_smoke.py
+          rm -f .coverage .coverage.*
+          SMOKE_COVERAGE=1 python smoke/run_smoke.py
+          python -m coverage combine
           python -m coverage report
+          python -m coverage xml -o smoke_out/integration-coverage.xml
       - name: Assert test credentials never persist
         run: |
           python smoke/assert_no_secrets.py smoke_out \
             lowpass peerpass adminpass apipass demo-pass mock-debug-key
+          test -z "$(find /tmp -maxdepth 1 -type d -name 'webvuln-auth-*' -print -quit)"
       - name: Convert smoke report to SARIF
         run: python -m core.sarif smoke_out/scan_report.json --output smoke_out/scan_report.sarif
       - name: Assert SARIF remains secret-free
