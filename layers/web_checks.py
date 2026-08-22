@@ -10,6 +10,9 @@ from core.utils import logger, normalize_url
 from layers.active_web_probes import ActiveWebProbeScanner
 from layers.browser_xss import BrowserXSSVerifier
 from layers.cache_checks import check_cache_policy
+from layers.csp_checks import check_csp_policy
+from layers.stacktrace_checks import detect_stack_trace
+from layers.technology_fingerprint import fingerprint_snapshot
 
 
 SECURITY_HEADERS = {
@@ -20,13 +23,13 @@ SECURITY_HEADERS = {
 }
 
 VERBOSE_ERROR_PATTERNS = [
-    r"traceback \(most recent call last\)",
-    r"exception in thread",
-    r"stack trace",
-    r"line \d+, in ",
     r"sqlstate",
     r"syntax error at or near",
+    r"you have an error in your sql syntax",
+    r"warning: .* on line \d+",
 ]
+
+_CONFIDENCE_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
 
 
 class WebPostureScanner:
@@ -42,6 +45,7 @@ class WebPostureScanner:
         self.snapshots: List[Dict[str, Any]] = []
         self.active_probe_meta: Dict[str, Any] = {}
         self.browser_xss_meta: Dict[str, Any] = {}
+        self.technology_index: Dict[str, Dict[str, Any]] = {}
 
     def scan(self, urls: List[str]) -> Tuple[List[Finding], Dict[str, Any]]:
         if not self.enabled:
@@ -61,11 +65,16 @@ class WebPostureScanner:
             if not snapshot:
                 continue
             self.snapshots.append(snapshot)
+            self._record_technologies(snapshot)
             findings.extend(self._check_security_headers(snapshot))
             findings.extend(self._check_cookies(snapshot))
             findings.extend(check_cache_policy(snapshot))
+            findings.extend(check_csp_policy(snapshot))
             findings.extend(self._check_redirects(snapshot))
-            findings.extend(self._check_verbose_errors(snapshot))
+            stack_findings = detect_stack_trace(snapshot)
+            findings.extend(stack_findings)
+            if not stack_findings:
+                findings.extend(self._check_verbose_errors(snapshot))
             cors_finding = self._check_cors(url)
             if cors_finding:
                 findings.append(cors_finding)
@@ -88,14 +97,45 @@ class WebPostureScanner:
         return findings, self._meta()
 
     def _meta(self) -> Dict[str, Any]:
+        technologies = sorted(
+            self.technology_index.values(),
+            key=lambda item: (str(item.get("category", "")), str(item.get("name", ""))),
+        )
         return {
             "checked_urls": len(self.snapshots),
             "errors": self.errors,
             "skipped": self.skipped,
             "sampled_urls": [snapshot["url"] for snapshot in self.snapshots[:10]],
+            "technologies": technologies,
             "active_probes": self.active_probe_meta,
             "browser_xss": self.browser_xss_meta,
         }
+
+    def _record_technologies(self, snapshot: Dict[str, Any]) -> None:
+        for observation in fingerprint_snapshot(snapshot):
+            name = str(observation.get("name", ""))
+            version = str(observation.get("version", ""))
+            key = f"{name.lower()}:{version.lower()}"
+            current = self.technology_index.setdefault(
+                key,
+                {
+                    "name": name,
+                    "version": version,
+                    "category": observation.get("category", ""),
+                    "confidence": observation.get("confidence", "LOW"),
+                    "signals": [],
+                    "observed_on": [],
+                },
+            )
+            if _CONFIDENCE_RANK.get(str(observation.get("confidence", "LOW")), 0) > _CONFIDENCE_RANK.get(
+                str(current.get("confidence", "LOW")), 0
+            ):
+                current["confidence"] = observation.get("confidence", "LOW")
+            for signal in observation.get("signals", []) or []:
+                if signal not in current["signals"]:
+                    current["signals"].append(signal)
+            if snapshot["url"] not in current["observed_on"] and len(current["observed_on"]) < 5:
+                current["observed_on"].append(snapshot["url"])
 
     def _unique_urls(self, urls: List[str]) -> List[str]:
         seen = set()
@@ -362,9 +402,9 @@ class WebPostureScanner:
                 evidence={
                     "status": snapshot["status"],
                     "matched_patterns": matched,
-                    "response_excerpt": re.sub(r"\s+", " ", body).strip()[:240],
+                    "response_length": len(body),
                 },
-                remediation="Return a generic error to the client and keep stack traces, SQL errors, and framework diagnostics in server-side logs.",
+                remediation="Return a generic error to the client and keep SQL errors and framework diagnostics in server-side logs.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="passive-web",
