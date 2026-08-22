@@ -40,7 +40,7 @@ dev = [
 ]
 
 [project.scripts]
-web-vuln-scanner = "main_v2:app"
+web-vuln-scanner = "core.cli:main"
 web-vuln-sarif = "core.sarif:main"
 web-vuln-profile = "core.scan_profiles:main"
 

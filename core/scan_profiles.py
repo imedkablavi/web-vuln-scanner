@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+from importlib import resources
 from pathlib import Path
 from typing import Any, Dict
 
@@ -25,8 +26,6 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "workflows": {"enabled": False},
         "passive_checks": {
             "data_exposure": {
-                # Passive/default mode inspects URLs already observed by the
-                # crawler but does not guess sensitive filesystem-like paths.
                 "max_probe_paths": 0,
                 "inspect_observed_urls": True,
             }
@@ -62,12 +61,13 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "crawler_enabled": True,
         "browser": {
             "interactions": {
-                # Browser discovery remains non-mutating unless a test operator
-                # explicitly enables submit/click actions in their config.
                 "enabled": False,
                 "submit_forms": False,
                 "click_selectors": [],
-            }
+            },
+            "capture_auth_trace": False,
+            "capture_auth_screenshots": False,
+            "retain_storage_state": False,
         },
         "plugins": {
             "sqli": {
@@ -107,13 +107,24 @@ def apply_profile(config: Dict[str, Any], profile: str) -> Dict[str, Any]:
     return result
 
 
+def _read_source_config(config_path: str | Path) -> Dict[str, Any]:
+    source = Path(config_path)
+    if source.exists():
+        return yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    if str(config_path).replace("\\", "/") == "config/default_config.yaml":
+        text = resources.files("config").joinpath("default_config.yaml").read_text(
+            encoding="utf-8"
+        )
+        return yaml.safe_load(text) or {}
+    raise FileNotFoundError(f"Config file not found: {config_path}")
+
+
 def materialize_profile(
     config_path: str | Path,
     profile: str,
     output_path: str | Path,
 ) -> Path:
-    source = Path(config_path)
-    config = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    config = _read_source_config(config_path)
     rendered = apply_profile(config, profile)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
