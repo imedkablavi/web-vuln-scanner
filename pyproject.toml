@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "web-vuln-scanner"
-version = "0.3.0"
-description = "Evidence-first command-line web security scanner for authorized targets"
+version = "0.4.0"
+description = "Scoped web assessment CLI with passive analysis and bounded active verification"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "imedkablavi" }]
