@@ -184,9 +184,16 @@ scanner:
     web:
       enabled: false
       max_urls: 10
+      max_params_per_url: 3
+      max_requests: 50
       ssti: true
       crlf: true
       trace: true
+      ssrf_same_origin: true
+
+    xml:
+      enabled: false
+      max_requests: 3
 
   plugins:
     sqli:
@@ -233,6 +240,10 @@ scanner:
       enabled: true
       max_urls: 25
       origin_probe: "https://audit.invalid"
+
+    auth_tokens:
+      enabled: true
+      max_lifetime_seconds: 86400
 
     data_exposure:
       enabled: true
