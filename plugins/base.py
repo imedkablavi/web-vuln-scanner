@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from core.models import AttackSurface, Finding
+from core.plugin_request import send_plugin_test
 
 
 @dataclass
@@ -18,6 +19,7 @@ class TestCase:
     kind: str  # query/body/path/header/cookie
     payload: str
     method_override: str | None = None
+    allow_redirects: bool | None = None
     notes: str | None = None
     baseline_key: str = ""
 
@@ -65,23 +67,39 @@ class BasePlugin(ABC):
         ...
 
     @abstractmethod
-    def verify(self, testcase: TestCase, baseline, response, context: Dict) -> VerificationResult:
+    def verify(
+        self,
+        testcase: TestCase,
+        baseline,
+        response,
+        context: Dict,
+    ) -> VerificationResult:
         ...
 
     @abstractmethod
-    def build_finding(self, testcase: TestCase, vres: VerificationResult, surface: AttackSurface) -> Finding:
+    def build_finding(
+        self,
+        testcase: TestCase,
+        vres: VerificationResult,
+        surface: AttackSurface,
+    ) -> Finding:
         ...
 
     def run(self, surface: AttackSurface, context: Dict) -> List[Finding]:
         """Compatibility adapter for plugins that still call ``run`` directly."""
 
         findings: List[Finding] = []
-        if all(hasattr(self, attr) for attr in ("generate_tests", "verify", "build_finding")):
+        if all(
+            hasattr(self, attr)
+            for attr in ("generate_tests", "verify", "build_finding")
+        ):
             baseline = context.get("baseline")
-            tests = self.generate_tests(surface, context)[: self.max_tests_per_surface(getattr(self, "config", {}))]
+            tests = self.generate_tests(surface, context)[
+                : self.max_tests_per_surface(getattr(self, "config", {}))
+            ]
             for tc in tests:
                 try:
-                    resp = self.session.send_surface(surface, tc.param, tc.payload)
+                    resp = send_plugin_test(self.session, surface, tc)
                     vres = self.verify(tc, baseline, resp, context)
                     if vres.is_verified:
                         findings.append(self.build_finding(tc, vres, surface))
