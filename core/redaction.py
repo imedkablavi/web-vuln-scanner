@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -29,6 +30,13 @@ _ASSIGNMENT = re.compile(
     r"refresh[_-]?token|client[_-]?secret|session[_-]?token|token))"
     r"(\s*[:=]\s*)([\"']?)([^\s,;\"'<>{}]+)(\3)"
 )
+# Text excerpts may contain serialized JSON. Cover quoted keys even if parsing
+# fails because the excerpt is truncated or embedded in surrounding text.
+_JSON_SECRET = re.compile(
+    r'(?i)([\"\'](?:[A-Za-z0-9_]*)(?:password|passwd|secret|api[_-]?key|'
+    r'access[_-]?token|refresh[_-]?token|client[_-]?secret|session[_-]?token|token)'
+    r'[\"\']\s*:\s*[\"\'])([^\"\']*)([\"\'])'
+)
 _BEARER = re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9._~+/=-]{8,})")
 _BASIC = re.compile(r"(?i)\b(Basic\s+)([A-Za-z0-9+/=]{8,})")
 _URL_USERINFO = re.compile(r"(://[^:/\s]+:)([^@/\s]+)(@)")
@@ -47,12 +55,29 @@ def fingerprint_secret(value: str) -> str:
     return hashlib.sha256(str(value).encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _redact_parsed_json(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return json.dumps(redact_structure(parsed), ensure_ascii=False)
+
+
 def redact_text(value: str, *, max_length: int | None = None) -> str:
     """Redact common secret forms from arbitrary text before persistence."""
     text = str(value or "")
+    parsed_json = _redact_parsed_json(text)
+    if parsed_json is not None:
+        text = parsed_json
     text = _PRIVATE_KEY.sub(
         lambda match: f"-----BEGIN {match.group(1)}-----\n{REDACTED}\n-----END {match.group(1)}-----",
         text,
+    )
+    text = _JSON_SECRET.sub(
+        lambda match: f"{match.group(1)}{REDACTED}{match.group(3)}", text
     )
     text = _ASSIGNMENT.sub(
         lambda match: (
