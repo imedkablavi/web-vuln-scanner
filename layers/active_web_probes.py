@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Tuple
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -8,12 +9,34 @@ from core.models import Finding
 from core.redaction import redact_text
 
 
+_URL_PARAM_HINTS = {
+    "url",
+    "uri",
+    "link",
+    "target",
+    "destination",
+    "dest",
+    "callback",
+    "webhook",
+    "endpoint",
+    "proxy",
+    "fetch",
+    "remote",
+    "source",
+    "src",
+    "image",
+    "avatar",
+    "feed",
+    "load",
+}
+
+
 class ActiveWebProbeScanner:
     """Low-impact checks used by the safe-active and full-authorized profiles.
 
     The layer has explicit URL, parameter, and request caps. It never follows
     redirects and does not use external callbacks, command execution, file
-    reads, or timing payloads.
+    reads, private-network targets, or timing payloads.
     """
 
     def __init__(self, requester, config):
@@ -29,12 +52,14 @@ class ActiveWebProbeScanner:
         self.enable_ssti = bool(self.layer_config.get("ssti", True))
         self.enable_crlf = bool(self.layer_config.get("crlf", True))
         self.enable_trace = bool(self.layer_config.get("trace", True))
+        self.enable_ssrf = bool(self.layer_config.get("ssrf_same_origin", True))
         self.errors: List[Dict[str, Any]] = []
         self.skipped: List[str] = []
         self.checked_urls = 0
         self.checked_parameters = 0
         self.requests_sent = 0
         self._trace_origins: set[str] = set()
+        self._reference_pages: Dict[str, str] = {}
         self._budget_notice_written = False
 
     def scan(self, snapshots: List[Dict[str, Any]]) -> Tuple[List[Finding], Dict[str, Any]]:
@@ -58,11 +83,19 @@ class ActiveWebProbeScanner:
                     findings.append(finding)
 
             parameters = self._query_params(url)[: self.max_params_per_url]
-            for param, _value in parameters:
+            for param, value in parameters:
                 if not self._budget_available():
                     break
                 self.checked_parameters += 1
-                if self.enable_crlf:
+                if self.enable_ssrf and self._looks_like_url_input(param, value):
+                    finding = self._check_same_origin_ssrf(
+                        url,
+                        param,
+                        str(snapshot.get("text") or ""),
+                    )
+                    if finding:
+                        findings.append(finding)
+                if self.enable_crlf and self._budget_available():
                     finding = self._check_crlf(url, param)
                     if finding:
                         findings.append(finding)
@@ -85,10 +118,12 @@ class ActiveWebProbeScanner:
             "requests_sent": self.requests_sent,
             "max_requests": self.max_requests,
             "trace_origins_checked": len(self._trace_origins),
+            "same_origin_references": len(self._reference_pages),
             "checks": {
                 "ssti": self.enable_ssti,
                 "crlf": self.enable_crlf,
                 "trace": self.enable_trace,
+                "ssrf_same_origin": self.enable_ssrf,
             },
             "errors": self.errors,
             "skipped": self.skipped,
@@ -137,7 +172,19 @@ class ActiveWebProbeScanner:
         return result
 
     @staticmethod
-    def _replace_query_value(url: str, name: str, value: str) -> tuple[str, list[tuple[str, str]]]:
+    def _looks_like_url_input(name: str, value: str) -> bool:
+        lowered = str(name or "").strip().lower().replace("-", "_")
+        pieces = {piece for piece in lowered.split("_") if piece}
+        if lowered in _URL_PARAM_HINTS or pieces.intersection(_URL_PARAM_HINTS):
+            return True
+        return str(value or "").strip().lower().startswith(("http://", "https://"))
+
+    @staticmethod
+    def _replace_query_value(
+        url: str,
+        name: str,
+        value: str,
+    ) -> tuple[str, list[tuple[str, str]]]:
         parsed = urlsplit(url)
         pairs = parse_qsl(parsed.query, keep_blank_values=True)
         replaced = False
@@ -165,6 +212,103 @@ class ActiveWebProbeScanner:
             params=params,
             allow_redirects=False,
             source="safe-active-web",
+        )
+
+    def _same_origin_reference(self, origin: str) -> str:
+        if origin in self._reference_pages:
+            return self._reference_pages[origin]
+        if not self._reserve_request():
+            return ""
+        try:
+            response = self.requester.send(
+                "GET",
+                origin,
+                allow_redirects=False,
+                source="safe-active-ssrf-reference",
+            )
+        except Exception as exc:
+            self.errors.append(
+                {"url": origin, "check": "ssrf_same_origin_reference", "error": str(exc)}
+            )
+            self._reference_pages[origin] = ""
+            return ""
+        body = str(getattr(response, "text", "") or "") if response is not None else ""
+        self._reference_pages[origin] = body
+        return body
+
+    @staticmethod
+    def _similarity(left: str, right: str) -> float:
+        left = " ".join(str(left or "").split())[:8000]
+        right = " ".join(str(right or "").split())[:8000]
+        if len(left) < 80 or len(right) < 80:
+            return 0.0
+        return SequenceMatcher(None, left, right).ratio()
+
+    def _check_same_origin_ssrf(
+        self,
+        url: str,
+        param: str,
+        baseline_text: str,
+    ) -> Finding | None:
+        origin = self._origin(url)
+        if not origin or self._remaining_requests() < 2:
+            return None
+        reference = self._same_origin_reference(origin)
+        if len(" ".join(reference.split())) < 80 or not self._budget_available():
+            return None
+        try:
+            response = self._send_query_probe(url, param, origin)
+        except Exception as exc:
+            self.errors.append(
+                {"url": url, "parameter": param, "check": "ssrf_same_origin", "error": str(exc)}
+            )
+            return None
+        if response is None:
+            return None
+        injected_body = str(response.text or "")
+        reference_similarity = self._similarity(injected_body, reference)
+        baseline_similarity = self._similarity(baseline_text, reference)
+        if reference_similarity < 0.86 or baseline_similarity >= 0.72:
+            return None
+        if injected_body.strip() == origin.strip():
+            return None
+        return Finding(
+            plugin="active_web_probe",
+            type="Server-Side URL Fetch Behavior",
+            title="Same-Origin URL Fetch Behavior Detected",
+            category="ssrf",
+            severity="MEDIUM",
+            confidence="MEDIUM",
+            surface_id=f"ssrf-same-origin:{url}:{param}",
+            url=url,
+            evidence={
+                "parameter": param,
+                "probe_target": "same-origin-root",
+                "reference_similarity": round(reference_similarity, 3),
+                "baseline_similarity": round(baseline_similarity, 3),
+                "status": response.status_code,
+                "response_excerpt": redact_text(injected_body, max_length=220),
+            },
+            remediation=(
+                "Treat user-controlled URLs as untrusted. Resolve and validate the final destination, "
+                "allow only required schemes and hosts, and block loopback, private, link-local, and "
+                "metadata address ranges after every redirect and DNS resolution."
+            ),
+            reproduction={
+                "method": "GET",
+                "url": url,
+                "param": param,
+                "probe": "same-origin-root",
+            },
+            verification_status="detected",
+            scanner_mode="safe-active-web",
+            reproducible=True,
+            target={"source": "safe-active-web", "parameter": param},
+            notes=[
+                "The response became strongly similar to a page fetched directly from the same authorized origin. "
+                "No private IP, cloud metadata address, external callback, or redirect chain was used. This proves "
+                "URL-fetch-like behavior, not reachability of internal networks."
+            ],
         )
 
     def _check_crlf(self, url: str, param: str) -> Finding | None:
