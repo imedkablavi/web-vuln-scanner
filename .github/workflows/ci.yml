@@ -44,13 +44,17 @@ jobs:
           python -m pytest -q \
             --cov=core --cov=layers --cov=plugins --cov=workflows \
             --cov-report=term-missing --cov-report=xml \
-            --cov-fail-under=30
+            --cov-fail-under=35
 
       - name: Verify helper CLIs
         run: |
           python -m core.scan_profiles passive --config config/default_config.yaml --output /tmp/passive.yaml
           python -m core.scan_profiles safe-active --config config/default_config.yaml --output /tmp/safe-active.yaml
           web-vuln-scanner --help
+          web-vuln-scanner version
+          web-vuln-scanner checks
+          web-vuln-scanner profiles
+          web-vuln-scanner doctor
           web-vuln-profile --help
           web-vuln-sarif --help
 
@@ -97,6 +101,10 @@ jobs:
           /tmp/wheel-test/bin/python -m pip install --upgrade pip
           /tmp/wheel-test/bin/python -m pip install dist/*.whl
           /tmp/wheel-test/bin/web-vuln-scanner --help
+          /tmp/wheel-test/bin/web-vuln-scanner version
+          /tmp/wheel-test/bin/web-vuln-scanner checks
+          /tmp/wheel-test/bin/web-vuln-scanner profiles
+          /tmp/wheel-test/bin/web-vuln-scanner doctor
           /tmp/wheel-test/bin/web-vuln-profile --help
           /tmp/wheel-test/bin/web-vuln-sarif --help
       - name: Run installed wheel outside source tree
