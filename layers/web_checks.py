@@ -11,6 +11,7 @@ from layers.active_web_probes import ActiveWebProbeScanner
 from layers.browser_xss import BrowserXSSVerifier
 from layers.cache_checks import check_cache_policy
 from layers.csp_checks import check_csp_policy
+from layers.safe_template_checks import SafeTemplateScanner
 from layers.stacktrace_checks import detect_stack_trace
 from layers.technology_fingerprint import fingerprint_snapshot
 
@@ -44,6 +45,7 @@ class WebPostureScanner:
         self.skipped: List[str] = []
         self.snapshots: List[Dict[str, Any]] = []
         self.active_probe_meta: Dict[str, Any] = {}
+        self.safe_template_meta: Dict[str, Any] = {}
         self.browser_xss_meta: Dict[str, Any] = {}
         self.technology_index: Dict[str, Dict[str, Any]] = {}
 
@@ -88,6 +90,16 @@ class WebPostureScanner:
             self.errors.extend(self.active_probe_meta["errors"])
         self.skipped.extend(self.active_probe_meta.get("skipped", []))
 
+        safe_templates = SafeTemplateScanner(self.requester, self.config)
+        template_target = str(self.config.get("target", "") or "")
+        if not template_target and self.snapshots:
+            template_target = self.snapshots[0]["url"]
+        template_findings, self.safe_template_meta = safe_templates.scan(template_target)
+        findings.extend(template_findings)
+        if self.safe_template_meta.get("errors"):
+            self.errors.extend(self.safe_template_meta["errors"])
+        self.skipped.extend(self.safe_template_meta.get("skipped", []))
+
         browser_xss = BrowserXSSVerifier(self.config)
         xss_findings, self.browser_xss_meta = browser_xss.verify(self.snapshots)
         findings.extend(xss_findings)
@@ -108,6 +120,7 @@ class WebPostureScanner:
             "sampled_urls": [snapshot["url"] for snapshot in self.snapshots[:10]],
             "technologies": technologies,
             "active_probes": self.active_probe_meta,
+            "safe_templates": self.safe_template_meta,
             "browser_xss": self.browser_xss_meta,
         }
 
