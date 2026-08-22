@@ -119,11 +119,11 @@ jobs:
           /tmp/wheel-test/bin/web-vuln-sarif --help
           /tmp/wheel-test/bin/web-vuln-diff --help
           /tmp/wheel-test/bin/web-vuln-har --help
-      - name: Verify packaged safe templates
+      - name: Verify packaged runtime resources
         run: |
           cd /tmp
           /tmp/wheel-test/bin/python - <<'PY'
-          from importlib import resources
+          from importlib import metadata, resources
           import yaml
           from layers.safe_template_checks import validate_safe_template
 
@@ -143,7 +143,18 @@ jobs:
           for name in sorted(expected):
               raw = yaml.safe_load(root.joinpath(name).read_text(encoding="utf-8")) or {}
               validate_safe_template(raw)
-          print(f"validated {len(expected)} packaged safe templates")
+
+          paths = [str(item).replace("\\", "/") for item in (metadata.files("web-vuln-scanner") or [])]
+          forbidden = [
+              path for path in paths
+              if path.endswith("config/rbac_matrix.yaml")
+              or "/workflows/default/" in f"/{path}"
+              or "/smoke/" in f"/{path}"
+              or "/tests/" in f"/{path}"
+          ]
+          if forbidden:
+              raise SystemExit(f"test/fixture resources leaked into wheel: {forbidden}")
+          print(f"validated {len(expected)} live safe templates; runtime wheel is fixture-free")
           PY
       - name: Run installed wheel outside source tree
         run: |
@@ -263,20 +274,41 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Build image
         run: docker build -t web-vuln-scanner:ci .
-      - name: Verify packaged CLI and non-root runtime
+      - name: Verify packaged CLI and fixture-free non-root runtime
         run: |
           docker run --rm web-vuln-scanner:ci --help
-          docker run --rm --entrypoint sh web-vuln-scanner:ci -c 'test "$(id -u)" != "0" && touch /app/.write-test && rm /app/.write-test'
+          docker run --rm --entrypoint sh web-vuln-scanner:ci -c '
+            set -eu
+            test "$(id -u)" != "0"
+            touch /app/.write-test && rm /app/.write-test
+            test ! -e /app/smoke
+            test ! -e /app/tests
+            python3 - <<"PY"
+          from importlib import metadata
+          paths = [str(item).replace("\\", "/") for item in (metadata.files("web-vuln-scanner") or [])]
+          forbidden = [
+              path for path in paths
+              if path.endswith("config/rbac_matrix.yaml")
+              or "/workflows/default/" in f"/{path}"
+              or "/smoke/" in f"/{path}"
+              or "/tests/" in f"/{path}"
+          ]
+          if forbidden:
+              raise SystemExit(f"fixture resources leaked into runtime image: {forbidden}")
+          PY
+          '
       - name: Run passive scan inside container
         run: |
           docker run --rm --entrypoint sh web-vuln-scanner:ci -c '
             set -eu
-            python3 smoke/mock_server.py --port 8765 >/tmp/mock.log 2>&1 &
+            mkdir -p /tmp/site
+            printf "%s\n" "<html><head><title>runtime</title></head><body>runtime e2e</body></html>" >/tmp/site/index.html
+            python3 -m http.server 8765 --bind 127.0.0.1 --directory /tmp/site >/tmp/http.log 2>&1 &
             PID=$!
             trap "kill $PID 2>/dev/null || true" EXIT
             python3 - <<"PY"
           import time, requests
-          url = "http://127.0.0.1:8765/clean"
+          url = "http://127.0.0.1:8765/"
           for _ in range(50):
               try:
                   if requests.get(url, timeout=0.5).status_code == 200:
@@ -284,10 +316,10 @@ jobs:
               except Exception:
                   time.sleep(0.1)
           else:
-              raise SystemExit("docker mock server did not start")
+              raise SystemExit("docker HTTP test server did not start")
           PY
             set +e
-            web-vuln-scanner http://127.0.0.1:8765/clean --profile passive --output /tmp/docker-report
+            web-vuln-scanner http://127.0.0.1:8765/ --profile passive --output /tmp/docker-report
             CODE=$?
             set -e
             test "$CODE" -eq 1
