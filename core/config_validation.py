@@ -23,6 +23,7 @@ _SCANNER_KEYS = {
     "output",
     "api",
     "passive_checks",
+    "active_checks",
     "verified_only",
     "max_findings_per_plugin",
     "request",
@@ -112,11 +113,7 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         if key in concurrency:
             _positive_int(concurrency[key], f"scanner.concurrency.{key}")
     if "max_retries" in concurrency:
-        _positive_int(
-            concurrency["max_retries"],
-            "scanner.concurrency.max_retries",
-            allow_zero=True,
-        )
+        _positive_int(concurrency["max_retries"], "scanner.concurrency.max_retries", allow_zero=True)
     if "delay" in concurrency:
         _non_negative_number(concurrency["delay"], "scanner.concurrency.delay")
 
@@ -142,13 +139,18 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     if "follow_redirects" in request and not isinstance(request["follow_redirects"], bool):
         raise ValueError("scanner.request.follow_redirects must be boolean")
 
+    active_checks = _mapping(scanner.get("active_checks", {}), "scanner.active_checks")
+    active_web = _mapping(active_checks.get("web", {}), "scanner.active_checks.web")
+    for key in ("enabled", "ssti", "crlf", "trace"):
+        if key in active_web and not isinstance(active_web[key], bool):
+            raise ValueError(f"scanner.active_checks.web.{key} must be boolean")
+    if "max_urls" in active_web:
+        _positive_int(active_web["max_urls"], "scanner.active_checks.web.max_urls", allow_zero=True)
+
     output = _mapping(scanner.get("output", {}), "scanner.output")
     if "directory" in output and not isinstance(output["directory"], str):
         raise ValueError("scanner.output.directory must be a string")
 
     if "max_findings_per_plugin" in scanner:
-        _positive_int(
-            scanner["max_findings_per_plugin"],
-            "scanner.max_findings_per_plugin",
-        )
+        _positive_int(scanner["max_findings_per_plugin"], "scanner.max_findings_per_plugin")
     return warnings
