@@ -35,8 +35,8 @@ _SCANNER_KEYS = {
 _DEPRECATED_KEYS = {
     ("scanner", "scope", "blocklist"): "Use scope.exclude_paths instead.",
     ("scanner", "crawler", "respect_robots"): (
-        "robots.txt is not treated as an authorization or security boundary; "
-        "this option was removed because it was not enforced."
+        "robots.txt is discovery metadata, not an authorization or security boundary. "
+        "Use crawler.discovery_files.robots_txt to control whether it is fetched."
     ),
     ("scanner", "crawler", "dedup"): (
         "Discovery uses deterministic URL/surface fingerprints; the old dedup "
@@ -114,6 +114,33 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                 f"scanner.crawler.{key}",
                 allow_zero=(key == "max_depth"),
             )
+
+    discovery_files = _mapping(
+        crawler.get("discovery_files", {}),
+        "scanner.crawler.discovery_files",
+    )
+    for key in ("robots_txt", "sitemap_xml"):
+        if key in discovery_files and not isinstance(discovery_files[key], bool):
+            raise ValueError(f"scanner.crawler.discovery_files.{key} must be boolean")
+    for key in ("max_sitemap_urls", "max_sitemap_files", "max_file_bytes"):
+        if key in discovery_files:
+            _positive_int(
+                discovery_files[key],
+                f"scanner.crawler.discovery_files.{key}",
+                allow_zero=(key == "max_sitemap_urls"),
+            )
+
+    site_map = _mapping(
+        crawler.get("site_map", {}),
+        "scanner.crawler.site_map",
+    )
+    if "enabled" in site_map and not isinstance(site_map["enabled"], bool):
+        raise ValueError("scanner.crawler.site_map.enabled must be boolean")
+    if "output_file" in site_map and not isinstance(site_map["output_file"], str):
+        raise ValueError("scanner.crawler.site_map.output_file must be a string")
+    if "max_entries" in site_map:
+        _positive_int(site_map["max_entries"], "scanner.crawler.site_map.max_entries")
+
     javascript_discovery = _mapping(
         crawler.get("javascript_discovery", {}),
         "scanner.crawler.javascript_discovery",
