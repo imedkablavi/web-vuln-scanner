@@ -106,14 +106,27 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     crawler = _mapping(scanner.get("crawler", {}), "scanner.crawler")
     for key in ("max_depth", "max_urls", "max_url_length"):
         if key in crawler:
-            _positive_int(crawler[key], f"scanner.crawler.{key}", allow_zero=(key == "max_depth"))
+            _positive_int(
+                crawler[key],
+                f"scanner.crawler.{key}",
+                allow_zero=(key == "max_depth"),
+            )
 
     concurrency = _mapping(scanner.get("concurrency", {}), "scanner.concurrency")
-    for key in ("threads", "per_host_concurrency", "timeout", "global_timeout_seconds"):
+    for key in (
+        "threads",
+        "per_host_concurrency",
+        "timeout",
+        "global_timeout_seconds",
+    ):
         if key in concurrency:
             _positive_int(concurrency[key], f"scanner.concurrency.{key}")
     if "max_retries" in concurrency:
-        _positive_int(concurrency["max_retries"], "scanner.concurrency.max_retries", allow_zero=True)
+        _positive_int(
+            concurrency["max_retries"],
+            "scanner.concurrency.max_retries",
+            allow_zero=True,
+        )
     if "delay" in concurrency:
         _non_negative_number(concurrency["delay"], "scanner.concurrency.delay")
 
@@ -129,29 +142,86 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         if key in browser and not isinstance(browser[key], bool):
             raise ValueError(f"scanner.browser.{key} must be boolean")
     if "auth_timeout_seconds" in browser:
-        _positive_int(browser["auth_timeout_seconds"], "scanner.browser.auth_timeout_seconds")
+        _positive_int(
+            browser["auth_timeout_seconds"],
+            "scanner.browser.auth_timeout_seconds",
+        )
 
     request = _mapping(scanner.get("request", {}), "scanner.request")
     if "max_redirects" in request:
-        _positive_int(request["max_redirects"], "scanner.request.max_redirects", allow_zero=True)
+        _positive_int(
+            request["max_redirects"],
+            "scanner.request.max_redirects",
+            allow_zero=True,
+        )
     if "max_retries" in request:
-        _positive_int(request["max_retries"], "scanner.request.max_retries", allow_zero=True)
-    if "follow_redirects" in request and not isinstance(request["follow_redirects"], bool):
+        _positive_int(
+            request["max_retries"],
+            "scanner.request.max_retries",
+            allow_zero=True,
+        )
+    if "follow_redirects" in request and not isinstance(
+        request["follow_redirects"], bool
+    ):
         raise ValueError("scanner.request.follow_redirects must be boolean")
 
-    active_checks = _mapping(scanner.get("active_checks", {}), "scanner.active_checks")
-    active_web = _mapping(active_checks.get("web", {}), "scanner.active_checks.web")
-    for key in ("enabled", "ssti", "crlf", "trace"):
+    active_checks = _mapping(
+        scanner.get("active_checks", {}),
+        "scanner.active_checks",
+    )
+    active_web = _mapping(
+        active_checks.get("web", {}),
+        "scanner.active_checks.web",
+    )
+    for key in ("enabled", "ssti", "crlf", "trace", "ssrf_same_origin"):
         if key in active_web and not isinstance(active_web[key], bool):
             raise ValueError(f"scanner.active_checks.web.{key} must be boolean")
     for key in ("max_urls", "max_params_per_url", "max_requests"):
         if key in active_web:
-            _positive_int(active_web[key], f"scanner.active_checks.web.{key}", allow_zero=True)
+            _positive_int(
+                active_web[key],
+                f"scanner.active_checks.web.{key}",
+                allow_zero=True,
+            )
+
+    active_xml = _mapping(
+        active_checks.get("xml", {}),
+        "scanner.active_checks.xml",
+    )
+    if "enabled" in active_xml and not isinstance(active_xml["enabled"], bool):
+        raise ValueError("scanner.active_checks.xml.enabled must be boolean")
+    if "max_requests" in active_xml:
+        _positive_int(
+            active_xml["max_requests"],
+            "scanner.active_checks.xml.max_requests",
+            allow_zero=True,
+        )
+
+    passive_checks = _mapping(
+        scanner.get("passive_checks", {}),
+        "scanner.passive_checks",
+    )
+    auth_tokens = _mapping(
+        passive_checks.get("auth_tokens", {}),
+        "scanner.passive_checks.auth_tokens",
+    )
+    if "enabled" in auth_tokens and not isinstance(auth_tokens["enabled"], bool):
+        raise ValueError(
+            "scanner.passive_checks.auth_tokens.enabled must be boolean"
+        )
+    if "max_lifetime_seconds" in auth_tokens:
+        _positive_int(
+            auth_tokens["max_lifetime_seconds"],
+            "scanner.passive_checks.auth_tokens.max_lifetime_seconds",
+        )
 
     output = _mapping(scanner.get("output", {}), "scanner.output")
     if "directory" in output and not isinstance(output["directory"], str):
         raise ValueError("scanner.output.directory must be a string")
 
     if "max_findings_per_plugin" in scanner:
-        _positive_int(scanner["max_findings_per_plugin"], "scanner.max_findings_per_plugin")
+        _positive_int(
+            scanner["max_findings_per_plugin"],
+            "scanner.max_findings_per_plugin",
+        )
     return warnings
