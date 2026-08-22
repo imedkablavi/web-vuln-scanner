@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from core.models import Finding
 from core.utils import logger, normalize_url
 from layers.active_web_probes import ActiveWebProbeScanner
+from layers.cache_checks import check_cache_policy
 
 
 SECURITY_HEADERS = {
@@ -49,7 +50,9 @@ class WebPostureScanner:
         inspected = 0
         for url in self._unique_urls(urls):
             if inspected >= self.max_urls:
-                self.skipped.append(f"Stopped after {self.max_urls} URLs; raise passive_checks.web.max_urls to inspect more.")
+                self.skipped.append(
+                    f"Stopped after {self.max_urls} URLs; raise passive_checks.web.max_urls to inspect more."
+                )
                 break
             inspected += 1
             snapshot = self._fetch_snapshot(url)
@@ -58,6 +61,7 @@ class WebPostureScanner:
             self.snapshots.append(snapshot)
             findings.extend(self._check_security_headers(snapshot))
             findings.extend(self._check_cookies(snapshot))
+            findings.extend(check_cache_policy(snapshot))
             findings.extend(self._check_redirects(snapshot))
             findings.extend(self._check_verbose_errors(snapshot))
             cors_finding = self._check_cors(url)
@@ -134,11 +138,17 @@ class WebPostureScanner:
         headers = snapshot["headers"]
         missing = []
         for header_key, header_name in SECURITY_HEADERS.items():
-            if header_key == "content-security-policy" and not snapshot["content_type"].startswith("text/html"):
+            if (
+                header_key == "content-security-policy"
+                and not snapshot["content_type"].startswith("text/html")
+            ):
                 continue
             if header_key not in headers:
                 missing.append(header_name)
-        if snapshot["url"].startswith("https://") and "strict-transport-security" not in headers:
+        if (
+            snapshot["url"].startswith("https://")
+            and "strict-transport-security" not in headers
+        ):
             missing.append("Strict-Transport-Security")
         if not missing:
             return findings
@@ -163,7 +173,11 @@ class WebPostureScanner:
                 verification_status="detected",
                 scanner_mode="passive-web",
                 reproducible=True,
-                target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                target={
+                    "source": "passive-web",
+                    "host": snapshot["host"],
+                    "path": snapshot["path"],
+                },
             )
         )
         return findings
@@ -193,7 +207,11 @@ class WebPostureScanner:
                         type="Cookie Security Attributes Missing",
                         title="Cookie Is Missing Recommended Security Attributes",
                         category="misconfiguration",
-                        severity="LOW" if snapshot["url"].startswith("http://") else "MEDIUM",
+                        severity=(
+                            "LOW"
+                            if snapshot["url"].startswith("http://")
+                            else "MEDIUM"
+                        ),
                         confidence="HIGH",
                         surface_id=f"cookie:{snapshot['url']}:{morsel.key}",
                         url=snapshot["url"],
@@ -208,14 +226,20 @@ class WebPostureScanner:
                         verification_status="detected",
                         scanner_mode="passive-web",
                         reproducible=True,
-                        target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                        target={
+                            "source": "passive-web",
+                            "host": snapshot["host"],
+                            "path": snapshot["path"],
+                        },
                     )
                 )
         return findings
 
     def _check_cors(self, url: str) -> Finding | None:
         try:
-            response = self.requester.send("GET", url, headers={"Origin": self.origin_probe})
+            response = self.requester.send(
+                "GET", url, headers={"Origin": self.origin_probe}
+            )
         except Exception as exc:
             self.errors.append({"url": url, "kind": "cors", "error": str(exc)})
             return None
@@ -240,11 +264,17 @@ class WebPostureScanner:
             evidence={
                 "origin_probe": self.origin_probe,
                 "access_control_allow_origin": acao,
-                "access_control_allow_credentials": headers.get("access-control-allow-credentials"),
+                "access_control_allow_credentials": headers.get(
+                    "access-control-allow-credentials"
+                ),
                 "status": response.status_code,
             },
             remediation="Allow only trusted origins when credentials are permitted, and avoid reflecting arbitrary Origin values.",
-            reproduction={"method": "GET", "url": normalize_url(url), "headers": {"Origin": self.origin_probe}},
+            reproduction={
+                "method": "GET",
+                "url": normalize_url(url),
+                "headers": {"Origin": self.origin_probe},
+            },
             verification_status="detected",
             scanner_mode="passive-web",
             reproducible=True,
@@ -252,7 +282,10 @@ class WebPostureScanner:
         )
 
     def _check_redirects(self, snapshot: Dict[str, Any]) -> List[Finding]:
-        if snapshot["status"] not in {301, 302, 303, 307, 308} or not snapshot["location"]:
+        if (
+            snapshot["status"] not in {301, 302, 303, 307, 308}
+            or not snapshot["location"]
+        ):
             return []
         parsed_current = urlparse(snapshot["url"])
         parsed_target = urlparse(snapshot["location"])
@@ -285,7 +318,11 @@ class WebPostureScanner:
                 verification_status="detected",
                 scanner_mode="passive-web",
                 reproducible=True,
-                target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                target={
+                    "source": "passive-web",
+                    "host": snapshot["host"],
+                    "path": snapshot["path"],
+                },
             )
         ]
 
@@ -320,6 +357,10 @@ class WebPostureScanner:
                 verification_status="detected",
                 scanner_mode="passive-web",
                 reproducible=True,
-                target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                target={
+                    "source": "passive-web",
+                    "host": snapshot["host"],
+                    "path": snapshot["path"],
+                },
             )
         ]
