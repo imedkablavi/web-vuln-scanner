@@ -35,12 +35,13 @@ class Requester:
         return Response(text="unchanged", url=url)
 
 
-def config():
+def config(*, max_requests=50):
     return {
         "active_checks": {
             "web": {
                 "enabled": True,
                 "max_urls": 3,
+                "max_requests": max_requests,
                 "ssti": True,
                 "crlf": True,
                 "trace": True,
@@ -66,11 +67,44 @@ def test_active_web_probes_confirm_ssti_crlf_and_trace():
     assert "HTTP Response Header Injection" in finding_types
     assert "HTTP TRACE Enabled" in finding_types
     assert meta["requests_sent"] >= 4
+    assert meta["max_requests"] == 50
 
     ssti = next(finding for finding in findings if finding.type == "Server-Side Template Injection")
     assert ssti.verification_status == "verified"
     assert ssti.confidence == "HIGH"
     assert ssti.reproducible is True
+
+
+def test_trace_runs_once_per_origin():
+    requester = Requester()
+    scanner = ActiveWebProbeScanner(requester, config())
+    scanner.scan(
+        [
+            {"url": "https://example.test/a", "text": "a"},
+            {"url": "https://example.test/b", "text": "b"},
+        ]
+    )
+
+    trace_calls = [call for call in requester.calls if call[0] == "TRACE"]
+    assert len(trace_calls) == 1
+    assert trace_calls[0][1] == "https://example.test/"
+
+
+def test_request_budget_is_a_hard_cap():
+    requester = Requester()
+    scanner = ActiveWebProbeScanner(requester, config(max_requests=2))
+    findings, meta = scanner.scan(
+        [{"url": "https://example.test/search?q=base", "text": "baseline"}]
+    )
+
+    assert len(requester.calls) == 2
+    assert meta["requests_sent"] == 2
+    assert meta["max_requests"] == 2
+    assert any("request budget" in item.lower() for item in meta["skipped"])
+    assert {finding.type for finding in findings} <= {
+        "HTTP TRACE Enabled",
+        "HTTP Response Header Injection",
+    }
 
 
 def test_active_web_probes_skip_parameter_checks_without_query_string():
