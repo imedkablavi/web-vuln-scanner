@@ -79,6 +79,16 @@ def _resolve_user_paths(config: Dict[str, Any], base_dir: Path) -> None:
         files.append(value if os.path.isabs(value) else str((base_dir / value).resolve()))
     workflow_cfg["files"] = files
 
+    crawler_cfg = scanner.setdefault("crawler", {})
+    har_seed = crawler_cfg.setdefault("har_seed", {})
+    har_files = []
+    for item in har_seed.get("files", []) or []:
+        value = str(item)
+        har_files.append(
+            value if os.path.isabs(value) else str((base_dir / value).resolve())
+        )
+    har_seed["files"] = har_files
+
 
 def materialize_runtime_config(config_path: str | None = None) -> Path:
     """Create a short-lived config with absolute resource paths for installed CLI use."""
