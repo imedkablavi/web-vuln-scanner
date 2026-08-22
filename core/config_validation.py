@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 
@@ -24,6 +25,7 @@ _SCANNER_KEYS = {
     "api",
     "passive_checks",
     "active_checks",
+    "attack_policy",
     "verified_only",
     "max_findings_per_plugin",
     "request",
@@ -235,6 +237,22 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             "scanner.active_checks.xml.max_requests",
             allow_zero=True,
         )
+
+    attack_policy = _mapping(
+        scanner.get("attack_policy", {}),
+        "scanner.attack_policy",
+    )
+    for key in ("skip_parameters", "skip_parameter_patterns"):
+        value = attack_policy.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"scanner.attack_policy.{key} must be a list of strings")
+    for pattern in attack_policy.get("skip_parameter_patterns", []) or []:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"scanner.attack_policy.skip_parameter_patterns contains invalid regex {pattern!r}: {exc}"
+            ) from exc
 
     passive_checks = _mapping(
         scanner.get("passive_checks", {}),
