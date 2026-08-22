@@ -1,41 +1,66 @@
 # Check reference
 
-This page describes what each release check proves before it writes a finding. It is intentionally narrower than a list of payloads.
+This page describes what a check must observe before it writes a finding. The distinction matters: some checks prove a specific condition, while others only identify behavior that needs manual validation.
 
 ## Stable active checks
 
-| Check | Default active profile | Verification rule | Main limit |
+| Check | Profile | Verification rule | Main limit |
 | --- | --- | --- | --- |
 | SQL injection | safe-active | database error evidence or bounded differential evidence | no timing probes in release profiles |
 | Reflected markup injection | safe-active | injected inert element is reconstructed by the HTML parser | does not prove JavaScript execution |
+| Browser XSS confirmation | full-authorized | Chromium executes a harmless inline handler that sets a DOM marker | GET/query only, three candidates by default, no storage/cookie access or callback |
 | Open redirect | safe-active | 3xx `Location` resolves to the exact reserved `wvs.invalid` canary | redirect is not followed |
 | SSTI | safe-active | two arithmetic expressions produce two distinct expected results | no command, file, callback, or timing primitive |
 | CRLF / response-header injection | safe-active | a unique canary appears as a separate response header | no cache-poisoning or response-splitting follow-up |
 | TRACE reflection | safe-active | a successful TRACE response reflects a unique request header | checked once per origin |
+| Same-origin URL fetch behavior | safe-active | a URL-like parameter causes the response to become strongly similar to a directly fetched page on the same authorized origin | does not target private IPs, metadata services, or external callbacks; does not claim internal-network SSRF |
 | Business logic / access control | safe-active | response variance is a signal; verified status requires actor/RBAC evidence | requires suitable test identities for strong conclusions |
 
-The safe-active profile limits the number of URLs considered by the active web layer and has a separate request budget. Hitting the budget stops new active web requests and is recorded in scan metadata.
+The safe-active profile has separate limits for URLs, parameters per URL, and active HTTP requests. Reaching the request budget stops new active web probes and is recorded in scan metadata.
+
+## Browser XSS confirmation
+
+`full-authorized` adds a small browser confirmation pass for HTML GET endpoints that already expose query parameters. The injected payload can only set `data-wvs-xss` on the document root. Chromium requests remain behind the same scope policy and off-scope HTTP(S) requests are aborted.
+
+A successful browser confirmation is reported as `verified` reflected XSS. The non-browser reflected-markup plugin remains useful on `safe-active`, but its result is intentionally weaker because HTML reconstruction alone does not prove JavaScript execution.
 
 ## Passive checks
 
-Passive checks inspect responses already fetched during discovery or perform low-impact posture requests. Current coverage includes:
+Passive and posture checks include:
 
 - browser security headers;
 - cookie attributes;
+- explicit caching of responses that appear user-specific;
 - credentialed CORS behavior;
 - redirect posture;
 - verbose error disclosure;
 - observed data exposure;
-- OpenAPI and GraphQL inventory/posture;
+- OpenAPI inventory, including path/query/header/cookie/body inputs;
+- GraphQL root query/mutation and argument inventory when introspection is available;
+- local JWT metadata review for configured or already-issued bearer tokens;
 - DNS and TLS inventory.
 
-The passive profile does not send the active payloads listed above.
+The cache check does not report a missing `Cache-Control` header by itself. It requires an explicit public/shared/positive cache policy and an additional signal that the response may be user-specific.
+
+JWT review is local only. Tokens are decoded for header/claim metadata, but the scanner does not modify, re-sign, brute-force, or replay a changed JWT. Raw token values and subject values are not written to findings.
+
+The passive profile does not send the injection payloads listed in the active table.
+
+## XML parser probe
+
+An internal-entity XML parser probe is available as an explicit opt-in under `active_checks.xml.enabled`. It is disabled in every built-in profile because XML endpoints commonly use POST, PUT, or PATCH and may change state.
+
+The payload contains one internal DTD entity with a random canary. It never uses a file URI, external entity URL, private address, metadata service, parameter-entity fetch, or recursive expansion. A positive result means the endpoint processes DTD entities; it is not reported as proven XXE data exfiltration.
 
 ## Experimental checks
 
 `lfi` and `cmd_injection` remain experimental. They are present for development and fixture work but are blocked by the release maturity policy in all built-in profiles.
 
 A check should not be promoted to stable just because it finds a positive fixture. Promotion requires useful negative fixtures and a verification rule that rejects ordinary reflection, template variation, authentication drift, and unrelated response noise.
+
+## Plugin request contract
+
+Plugin test cases now carry the injection location as part of the request contract. Query, body, header, cookie, and discovered path inputs are sent to their declared location. Method overrides and redirect policy are also forwarded by the scanner. This prevents a header or cookie test from silently becoming a query-string test.
 
 ## Status language
 
@@ -44,10 +69,10 @@ The reporter uses verification status deliberately:
 - `informational`: inventory or context, not a vulnerability claim;
 - `suspected`: a heuristic signal that needs manual validation;
 - `detected`: the stated condition was observed, but exploitability was not proven;
-- `verified`: the check met its stronger reproducibility rule.
+- `verified`: the check met its stronger reproducibility or execution rule.
 
-For example, reflected markup is `detected`, not `verified XSS`, because the scanner currently proves HTML element injection rather than script execution.
+Examples: same-origin URL-fetch behavior is `detected`, not verified internal-network SSRF. Internal DTD entity expansion is `detected`, not verified XXE data exfiltration. Browser-confirmed reflected XSS can be `verified` because the marker was produced by actual browser execution.
 
 ## Mappings
 
-Mappings shown by `web-vuln-scanner checks` are references for navigation, not claims of framework coverage. The current active checks touch OWASP WSTG areas such as SQL injection, reflected XSS, HTTP response splitting, SSTI, authorization testing, and HTTP methods.
+Mappings shown by `web-vuln-scanner checks` are navigation references, not claims that the scanner covers an entire CWE, WSTG chapter, or OWASP category.
