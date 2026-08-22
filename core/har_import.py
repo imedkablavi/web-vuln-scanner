@@ -21,15 +21,31 @@ _SENSITIVE_HEADER_NAMES = {
 }
 
 
+def _safe_netloc(parsed) -> str:
+    host = parsed.hostname or ""
+    if not host:
+        return ""
+    rendered_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("URL contains an invalid port") from exc
+    return f"{rendered_host}:{port}" if port is not None else rendered_host
+
+
 def _scope_config(target: str, *, allow_private: bool = False) -> Dict[str, Any]:
     parsed = urlsplit(target)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("target must be an absolute http(s) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("target must not contain embedded URL credentials")
+    safe_netloc = _safe_netloc(parsed)
+    safe_target = urlunsplit((parsed.scheme, safe_netloc, parsed.path or "/", "", ""))
     return {
-        "target": target,
+        "target": safe_target,
         "scope": {
-            "allowlist": [parsed.netloc],
-            "include_domains": [parsed.netloc],
+            "allowlist": [safe_netloc],
+            "include_domains": [safe_netloc],
             "exclude_paths": [],
             "allow_private": bool(allow_private),
             "resolve_dns": False,
@@ -41,7 +57,9 @@ def _scope_config(target: str, *, allow_private: bool = False) -> Dict[str, Any]
 
 def _base_url(value: str) -> str:
     parsed = urlsplit(str(value or ""))
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
+    return urlunsplit(
+        (parsed.scheme, _safe_netloc(parsed), parsed.path or "/", "", "")
+    )
 
 
 def _header_names(headers: Iterable[Dict[str, Any]]) -> List[str]:
@@ -130,7 +148,8 @@ def import_har_data(
     if max_entries <= 0:
         raise ValueError("max_entries must be > 0")
 
-    scope = ScopePolicy(_scope_config(target, allow_private=allow_private))
+    scope_config = _scope_config(target, allow_private=allow_private)
+    scope = ScopePolicy(scope_config)
     surfaces: List[Dict[str, Any]] = []
     seen = set()
     skipped = {"out_of_scope": 0, "unsupported": 0, "duplicate": 0}
@@ -162,7 +181,7 @@ def import_har_data(
 
     return {
         "format": "web-vuln-scanner-surface-inventory-v1",
-        "target": target,
+        "target": scope_config["target"],
         "source": "har",
         "sanitized": True,
         "summary": {
