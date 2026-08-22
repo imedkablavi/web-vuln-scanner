@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from core.models import Finding
 from core.utils import logger, normalize_url
+from layers.active_web_probes import ActiveWebProbeScanner
 
 
 SECURITY_HEADERS = {
@@ -37,17 +38,18 @@ class WebPostureScanner:
         self.errors: List[Dict[str, Any]] = []
         self.skipped: List[str] = []
         self.snapshots: List[Dict[str, Any]] = []
+        self.active_probe_meta: Dict[str, Any] = {}
 
     def scan(self, urls: List[str]) -> Tuple[List[Finding], Dict[str, Any]]:
         if not self.enabled:
-            self.skipped.append("Web passive checks are disabled by configuration.")
+            self.skipped.append("Web posture checks are disabled in this configuration.")
             return [], self._meta()
 
         findings: List[Finding] = []
         inspected = 0
         for url in self._unique_urls(urls):
             if inspected >= self.max_urls:
-                self.skipped.append(f"Stopped after {self.max_urls} URLs to keep passive checks bounded.")
+                self.skipped.append(f"Stopped after {self.max_urls} URLs; raise passive_checks.web.max_urls to inspect more.")
                 break
             inspected += 1
             snapshot = self._fetch_snapshot(url)
@@ -61,6 +63,13 @@ class WebPostureScanner:
             cors_finding = self._check_cors(url)
             if cors_finding:
                 findings.append(cors_finding)
+
+        active_probe_scanner = ActiveWebProbeScanner(self.requester, self.config)
+        active_findings, self.active_probe_meta = active_probe_scanner.scan(self.snapshots)
+        findings.extend(active_findings)
+        if self.active_probe_meta.get("errors"):
+            self.errors.extend(self.active_probe_meta["errors"])
+        self.skipped.extend(self.active_probe_meta.get("skipped", []))
         return findings, self._meta()
 
     def _meta(self) -> Dict[str, Any]:
@@ -69,6 +78,7 @@ class WebPostureScanner:
             "errors": self.errors,
             "skipped": self.skipped,
             "sampled_urls": [snapshot["url"] for snapshot in self.snapshots[:10]],
+            "active_probes": self.active_probe_meta,
         }
 
     def _unique_urls(self, urls: List[str]) -> List[str]:
@@ -89,7 +99,7 @@ class WebPostureScanner:
         try:
             response = self.requester.send("GET", url)
         except Exception as exc:
-            logger.error(f"Passive web check failed for {url}: {exc}")
+            logger.error(f"Web posture request failed for {url}: {exc}")
             self.errors.append({"url": url, "error": str(exc)})
             return None
         if response is None:
@@ -137,7 +147,7 @@ class WebPostureScanner:
             Finding(
                 plugin="web_posture",
                 type="Missing Security Headers",
-                title="Security Headers Missing",
+                title="Browser Security Headers Are Incomplete",
                 category="misconfiguration",
                 severity=severity,
                 confidence="HIGH",
@@ -148,7 +158,7 @@ class WebPostureScanner:
                     "observed_headers": headers,
                     "status": snapshot["status"],
                 },
-                remediation="Set baseline browser security headers and validate them in deployment checks.",
+                remediation="Set the missing headers at the application or edge layer, then verify the final response seen by clients.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="passive-web",
@@ -181,7 +191,7 @@ class WebPostureScanner:
                     Finding(
                         plugin="web_posture",
                         type="Cookie Security Attributes Missing",
-                        title="Cookie Missing Security Attributes",
+                        title="Cookie Is Missing Recommended Security Attributes",
                         category="misconfiguration",
                         severity="LOW" if snapshot["url"].startswith("http://") else "MEDIUM",
                         confidence="HIGH",
@@ -193,7 +203,7 @@ class WebPostureScanner:
                             "same_site": same_site,
                             "set_cookie": raw_cookie,
                         },
-                        remediation="Mark session cookies as HttpOnly, Secure, and SameSite where applicable.",
+                        remediation="Set HttpOnly, Secure, and an appropriate SameSite policy on session or sensitive cookies.",
                         reproduction={"method": "GET", "url": snapshot["url"]},
                         verification_status="detected",
                         scanner_mode="passive-web",
@@ -221,7 +231,7 @@ class WebPostureScanner:
         return Finding(
             plugin="web_posture",
             type="Permissive CORS Policy",
-            title="CORS Allows Credentialed Cross-Origin Access",
+            title="Credentialed CORS Accepts an Untrusted Origin",
             category="misconfiguration",
             severity="MEDIUM",
             confidence="HIGH",
@@ -233,7 +243,7 @@ class WebPostureScanner:
                 "access_control_allow_credentials": headers.get("access-control-allow-credentials"),
                 "status": response.status_code,
             },
-            remediation="Restrict Access-Control-Allow-Origin to trusted origins and avoid credentialed wildcard CORS.",
+            remediation="Allow only trusted origins when credentials are permitted, and avoid reflecting arbitrary Origin values.",
             reproduction={"method": "GET", "url": normalize_url(url), "headers": {"Origin": self.origin_probe}},
             verification_status="detected",
             scanner_mode="passive-web",
@@ -249,10 +259,10 @@ class WebPostureScanner:
         if not parsed_target.scheme:
             return []
         if parsed_current.scheme == "https" and parsed_target.scheme == "http":
-            title = "HTTPS Downgrade Redirect"
+            title = "HTTPS Request Redirects to HTTP"
             severity = "MEDIUM"
         elif parsed_target.netloc and parsed_target.netloc != parsed_current.netloc:
-            title = "External Redirect Observed"
+            title = "Response Redirects to an External Host"
             severity = "LOW"
         else:
             return []
@@ -270,7 +280,7 @@ class WebPostureScanner:
                     "status": snapshot["status"],
                     "location": snapshot["location"],
                 },
-                remediation="Review redirect targets and prevent external or downgrade redirects where they are not required.",
+                remediation="Confirm that the redirect is intentional. Remove downgrade redirects and restrict external destinations where users can influence the target.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="passive-web",
@@ -294,7 +304,7 @@ class WebPostureScanner:
             Finding(
                 plugin="web_posture",
                 type="Verbose Error Disclosure",
-                title="Server Error Exposes Internal Details",
+                title="Server Error Reveals Internal Details",
                 category="misconfiguration",
                 severity="MEDIUM",
                 confidence="HIGH",
@@ -305,7 +315,7 @@ class WebPostureScanner:
                     "matched_patterns": matched,
                     "response_excerpt": re.sub(r"\s+", " ", body).strip()[:240],
                 },
-                remediation="Replace verbose exception pages with generic error responses and log stack traces server-side only.",
+                remediation="Return a generic error to the client and keep stack traces, SQL errors, and framework diagnostics in server-side logs.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="passive-web",
