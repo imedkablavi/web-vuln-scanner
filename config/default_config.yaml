@@ -14,6 +14,11 @@ scanner:
     max_depth: 3
     max_urls: 2000
     max_url_length: 2048
+    javascript_discovery:
+      enabled: true
+      max_scripts: 10
+      max_script_bytes: 250000
+      max_endpoints: 100
 
   concurrency:
     threads: 5
