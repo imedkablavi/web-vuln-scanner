@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote, urljoin
 
+from .insertion_points import schema_inputs
 from .models import AttackSurface, InputField
 from .scope import ScopePolicy
 from .utils import logger
@@ -68,42 +69,65 @@ class APIEngine:
             return True
         return default
 
-    def _parameter_inputs(self, parameters):
+    @staticmethod
+    def _resolve_ref(spec, ref):
+        if not isinstance(spec, dict) or not isinstance(ref, str) or not ref.startswith("#/"):
+            return None
+        current = spec
+        for token in ref[2:].split("/"):
+            token = token.replace("~1", "/").replace("~0", "~")
+            if not isinstance(current, dict) or token not in current:
+                return None
+            current = current[token]
+        return current if isinstance(current, dict) else None
+
+    def _schema_inputs(self, schema, spec, *, kind="body"):
+        return schema_inputs(
+            schema if isinstance(schema, dict) else {},
+            resolve_ref=lambda ref: self._resolve_ref(spec, ref),
+            kind=kind,
+            max_depth=int(self.config.get("api", {}).get("max_schema_depth", 8) or 8),
+            max_points=int(self.config.get("api", {}).get("max_insertion_points", 200) or 200),
+        )
+
+    def _parameter_inputs(self, parameters, spec=None):
         inputs = []
         for parameter in parameters or []:
             if not isinstance(parameter, dict):
                 continue
+            if "$ref" in parameter and spec:
+                resolved = self._resolve_ref(spec, str(parameter.get("$ref", "")))
+                if isinstance(resolved, dict):
+                    parameter = resolved
             name = parameter.get("name")
             location = str(parameter.get("in", "query") or "query")
+            if location == "body":
+                body_fields = self._schema_inputs(parameter.get("schema", {}), spec or {})
+                if body_fields:
+                    inputs.extend(body_fields)
+                    continue
             if not name:
                 continue
-            if location == "body":
-                properties = self._schema_properties(parameter.get("schema", {}))
-                if properties:
-                    for prop_name, prop_schema in properties.items():
-                        inputs.append(
-                            InputField(
-                                name=prop_name,
-                                value=self._sample_value(prop_schema),
-                                kind="body",
-                            )
-                        )
-                    continue
             schema = parameter.get("schema", parameter)
             inputs.append(
                 InputField(
                     name=name,
                     value=self._sample_value(schema),
                     kind=location,
+                    path=str(name),
+                    data_type=str((schema or {}).get("type", "") or ""),
+                    required=bool(parameter.get("required", False)),
                 )
             )
         return inputs
 
-    def _request_body_inputs(self, details):
+    def _request_body_inputs(self, details, spec):
         request_body = details.get("requestBody", {}) or {}
+        if isinstance(request_body, dict) and "$ref" in request_body:
+            request_body = self._resolve_ref(spec, str(request_body.get("$ref", ""))) or {}
         content = request_body.get("content", {}) if isinstance(request_body, dict) else {}
         if not isinstance(content, dict):
-            return [], []
+            return [], [], ""
         content_types = [str(item) for item in content.keys()]
         preferred = [
             "application/json",
@@ -116,19 +140,23 @@ class APIEngine:
         if selected is None and content_types:
             selected = content_types[0]
         if selected is None:
-            return [], content_types
+            return [], content_types, ""
         media = content.get(selected, {}) or {}
         schema = media.get("schema", {}) if isinstance(media, dict) else {}
-        properties = self._schema_properties(schema)
-        inputs = [
-            InputField(
-                name=name,
-                value=self._sample_value(prop_schema),
-                kind="body",
-            )
-            for name, prop_schema in properties.items()
-        ]
-        return inputs, content_types
+        inputs = self._schema_inputs(schema, spec)
+        if selected in {"application/x-www-form-urlencoded", "multipart/form-data"}:
+            inputs = [
+                InputField(
+                    name=item.name,
+                    value=item.value,
+                    kind="body",
+                    path=item.name,
+                    data_type=item.data_type,
+                    required=item.required,
+                )
+                for item in inputs
+            ]
+        return inputs, content_types, selected
 
     @staticmethod
     def _materialize_path(path, inputs):
@@ -175,6 +203,7 @@ class APIEngine:
             operations_without_security = []
             discovered = []
             input_locations = {}
+            input_paths_total = 0
             for path, methods in paths.items():
                 if not isinstance(methods, dict):
                     continue
@@ -187,9 +216,12 @@ class APIEngine:
                         continue
                     parameter_inputs = self._parameter_inputs(
                         list(path_parameters)
-                        + list(details.get("parameters", []) or [])
+                        + list(details.get("parameters", []) or []),
+                        spec,
                     )
-                    body_inputs, request_content_types = self._request_body_inputs(details)
+                    body_inputs, request_content_types, selected_content_type = (
+                        self._request_body_inputs(details, spec)
+                    )
                     inputs = parameter_inputs + body_inputs
                     params = {
                         item.name: item.value
@@ -217,16 +249,37 @@ class APIEngine:
                         )
                     for item in inputs:
                         input_locations[item.kind] = input_locations.get(item.kind, 0) + 1
+                        if item.path:
+                            input_paths_total += 1
 
                     if not request_content_types and not spec.get("openapi"):
                         request_content_types = list(
                             details.get("consumes", spec.get("consumes", [])) or []
                         )
-                    selected_content_type = (
+                    selected_content_type = selected_content_type or (
                         "application/json"
                         if "application/json" in request_content_types
                         else (request_content_types[0] if request_content_types else "")
                     )
+                    if not spec.get("openapi") and body_inputs:
+                        if selected_content_type in {
+                            "application/x-www-form-urlencoded",
+                            "multipart/form-data",
+                        }:
+                            for item in body_inputs:
+                                item.path = item.name
+                    body_format = (
+                        "json"
+                        if "json" in selected_content_type.lower()
+                        else "xml"
+                        if "xml" in selected_content_type.lower()
+                        else "multipart"
+                        if "multipart" in selected_content_type.lower()
+                        else "form"
+                        if "x-www-form-urlencoded" in selected_content_type.lower()
+                        else ""
+                    )
+                    active_eligible = body_format != "xml"
                     surface = AttackSurface(
                         url=full_url,
                         method=method.upper(),
@@ -245,7 +298,10 @@ class APIEngine:
                             ),
                             "request_content_types": request_content_types,
                             "content_type": selected_content_type,
+                            "body_format": body_format,
                             "input_names": [item.name for item in inputs],
+                            "input_paths": [item.path or item.name for item in inputs],
+                            "active_eligible": active_eligible,
                         },
                     )
                     self.endpoints.append(surface)
@@ -259,6 +315,7 @@ class APIEngine:
                 "operations_total": operations_total,
                 "operations_without_security": operations_without_security,
                 "input_locations": input_locations,
+                "insertion_paths_total": input_paths_total,
                 "surfaces_with_inputs": sum(
                     1 for surface in discovered if surface.inputs or surface.params
                 ),
@@ -385,12 +442,16 @@ class APIEngine:
                             name="query",
                             value="query WVSProbe { __typename }",
                             kind="body",
+                            path="/query",
+                            data_type="string",
                         )
                     ],
                     source="graphql",
                     meta={
                         "introspection": True,
                         "content_type": "application/json",
+                        "body_format": "graphql",
+                        "active_eligible": False,
                         "query_fields": query_fields,
                         "mutation_fields": mutation_fields,
                     },
