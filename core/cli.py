@@ -29,13 +29,14 @@ _VERIFICATION_RANK = {
     "detected": 2,
     "verified": 3,
 }
-_ACTIVE_WEB_CHECKS = {
+_BUILTIN_CHECKS = {
     "ssti": {
         "maturity": "stable",
         "activity": "safe-active",
         "cwe": ["CWE-1336"],
         "wstg": ["WSTG-INPV-18"],
         "summary": "Two-result arithmetic template evaluation check",
+        "source": "active-web",
     },
     "crlf": {
         "maturity": "stable",
@@ -43,6 +44,7 @@ _ACTIVE_WEB_CHECKS = {
         "cwe": ["CWE-113"],
         "wstg": ["WSTG-INPV-15"],
         "summary": "Response-header canary injection check",
+        "source": "active-web",
     },
     "trace": {
         "maturity": "stable",
@@ -50,6 +52,55 @@ _ACTIVE_WEB_CHECKS = {
         "cwe": ["CWE-16"],
         "wstg": ["WSTG-CONF-06"],
         "summary": "TRACE request-header reflection check",
+        "source": "active-web",
+    },
+    "ssrf_same_origin": {
+        "maturity": "stable",
+        "activity": "safe-active",
+        "cwe": ["CWE-918"],
+        "wstg": ["WSTG-INPV-19"],
+        "summary": "Same-origin URL-fetch behavior probe; no private or callback target",
+        "source": "active-web",
+    },
+    "browser_xss": {
+        "maturity": "stable",
+        "activity": "full-authorized",
+        "cwe": ["CWE-79"],
+        "wstg": ["WSTG-INPV-01"],
+        "summary": "Chromium confirmation with an inert DOM marker",
+        "source": "browser",
+    },
+    "cache_posture": {
+        "maturity": "stable",
+        "activity": "passive",
+        "cwe": [],
+        "wstg": [],
+        "summary": "Explicit cache policy review on responses that appear user-specific",
+        "source": "passive-web",
+    },
+    "jwt_posture": {
+        "maturity": "stable",
+        "activity": "passive-auth",
+        "cwe": [],
+        "wstg": [],
+        "summary": "Local metadata review of configured or already-issued JWTs",
+        "source": "auth",
+    },
+    "graphql_schema": {
+        "maturity": "stable",
+        "activity": "passive-api",
+        "cwe": [],
+        "wstg": [],
+        "summary": "GraphQL query, mutation, and argument inventory from introspection",
+        "source": "api",
+    },
+    "xml_internal_entity": {
+        "maturity": "opt-in",
+        "activity": "full-authorized",
+        "cwe": ["CWE-611"],
+        "wstg": [],
+        "summary": "Internal DTD entity expansion probe; no file or external entity",
+        "source": "active-api",
     },
 }
 
@@ -125,11 +176,23 @@ def _report_matches_gate(
 ) -> bool:
     data = json.loads(Path(report_path).read_text(encoding="utf-8"))
     findings = list(data.get("findings") or [])
-    severity_floor = -1 if minimum_severity == "any" else _SEVERITY_RANK[minimum_severity]
-    verification_floor = -1 if minimum_verification == "any" else _VERIFICATION_RANK[minimum_verification]
+    severity_floor = (
+        -1
+        if minimum_severity == "any"
+        else _SEVERITY_RANK[minimum_severity]
+    )
+    verification_floor = (
+        -1
+        if minimum_verification == "any"
+        else _VERIFICATION_RANK[minimum_verification]
+    )
     for finding in findings:
-        severity = _SEVERITY_RANK.get(str(finding.get("severity", "")).strip().lower(), -1)
-        verification = _VERIFICATION_RANK.get(str(finding.get("verification_status", "")).strip().lower(), -1)
+        severity = _SEVERITY_RANK.get(
+            str(finding.get("severity", "")).strip().lower(), -1
+        )
+        verification = _VERIFICATION_RANK.get(
+            str(finding.get("verification_status", "")).strip().lower(), -1
+        )
         if severity >= severity_floor and verification >= verification_floor:
             return True
     return False
@@ -140,10 +203,18 @@ def _print_rows(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
     for row in rows:
         for index, value in enumerate(row):
             widths[index] = max(widths[index], len(str(value)))
-    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    print(
+        "  ".join(
+            header.ljust(widths[index]) for index, header in enumerate(headers)
+        )
+    )
     print("  ".join("-" * width for width in widths))
     for row in rows:
-        print("  ".join(str(value).ljust(widths[index]) for index, value in enumerate(row)))
+        print(
+            "  ".join(
+                str(value).ljust(widths[index]) for index, value in enumerate(row)
+            )
+        )
 
 
 def _checks_data() -> list[dict[str, object]]:
@@ -160,7 +231,7 @@ def _checks_data() -> list[dict[str, object]]:
                 "source": "plugin",
             }
         )
-    for name, meta in sorted(_ACTIVE_WEB_CHECKS.items()):
+    for name, meta in sorted(_BUILTIN_CHECKS.items()):
         checks.append(
             {
                 "name": name,
@@ -169,7 +240,7 @@ def _checks_data() -> list[dict[str, object]]:
                 "cwe": list(meta["cwe"]),
                 "wstg": list(meta["wstg"]),
                 "summary": meta["summary"],
-                "source": "active-web",
+                "source": meta["source"],
             }
         )
     return checks
@@ -191,15 +262,17 @@ def _print_checks(*, as_json: bool = False) -> None:
         for item in checks
     ]
     print("Available checks")
-    print("Stable active checks run only in an active profile. Experimental checks remain disabled.\n")
+    print(
+        "Active checks run only in the profile shown below. Opt-in checks remain off until enabled in config.\n"
+    )
     _print_rows(("CHECK", "MATURITY", "MODE", "CWE", "WSTG"), rows)
 
 
 def _profiles_data() -> list[dict[str, str]]:
     descriptions = {
         "passive": "Inventory and posture checks only; no active payloads.",
-        "safe-active": "Bounded active checks without browser interaction or auth workflows.",
-        "full-authorized": "Browser, auth, workflow, and stable active checks for controlled assessments.",
+        "safe-active": "Bounded HTTP probes without browser interaction or auth workflows.",
+        "full-authorized": "Adds scoped browser, auth, workflow, and execution confirmation for controlled assessments.",
     }
     return [
         {"name": name, "purpose": descriptions.get(name, "")}
@@ -256,7 +329,13 @@ def _doctor() -> int:
         rows.append((module, "ok" if available else "missing", "required"))
 
     browser_available = importlib.util.find_spec("playwright") is not None
-    rows.append(("playwright", "ok" if browser_available else "optional", "needed for browser-assisted profiles"))
+    rows.append(
+        (
+            "playwright",
+            "ok" if browser_available else "optional",
+            "needed for browser-assisted profiles",
+        )
+    )
 
     print(f"web-vuln-scanner {_package_version()} diagnostics\n")
     _print_rows(("COMPONENT", "STATUS", "DETAIL"), rows)
@@ -272,17 +351,28 @@ def _print_scan_help() -> None:
     print("  web-vuln-scanner scan <target> [options]\n")
     print("Scan options:")
     rows = [
-        ("--profile NAME", "passive, safe-active, or full-authorized (default: passive)"),
+        (
+            "--profile NAME",
+            "passive, safe-active, or full-authorized (default: passive)",
+        ),
         ("--config PATH", "scanner YAML configuration"),
         ("--swagger URL", "OpenAPI/Swagger JSON endpoint"),
         ("--graphql URL", "GraphQL endpoint"),
         ("--output DIR", "report directory (default: reports)"),
         ("--debug", "print scanner counters and diagnostic detail"),
-        ("--fail-on-severity LEVEL", "CI gate: info, low, medium, high, critical"),
-        ("--fail-on-verification STATUS", "CI gate: informational, suspected, detected, verified"),
+        (
+            "--fail-on-severity LEVEL",
+            "CI gate: info, low, medium, high, critical",
+        ),
+        (
+            "--fail-on-verification STATUS",
+            "CI gate: informational, suspected, detected, verified",
+        ),
     ]
     _print_rows(("OPTION", "DESCRIPTION"), rows)
-    print("\nExit codes: 0 clean, 1 findings, 2 runtime/config error, 3 partial or aborted.")
+    print(
+        "\nExit codes: 0 clean, 1 findings, 2 runtime/config error, 3 partial or aborted."
+    )
 
 
 def _print_overview() -> None:
@@ -291,7 +381,7 @@ def _print_overview() -> None:
     print("Commands:")
     rows = [
         ("scan <target>", "run a scan"),
-        ("checks [--json]", "list available checks and maturity"),
+        ("checks [--json]", "list checks, maturity, and execution mode"),
         ("profiles [--json]", "show built-in scan profiles"),
         ("doctor", "check the installed runtime"),
         ("validate-config [PATH]", "validate scanner YAML without scanning"),
@@ -321,7 +411,9 @@ def _handle_meta_command(argv: list[str]) -> bool:
     if command == "validate-config":
         path = next((item for item in extras if not item.startswith("-")), None)
         raise SystemExit(_validate_config_command(path))
-    if command == "scan" and any(item in {"--help", "-h"} for item in extras):
+    if command == "scan" and any(
+        item in {"--help", "-h"} for item in extras
+    ):
         _print_scan_help()
         return True
     if command in {"help", "--help", "-h"}:
@@ -362,7 +454,9 @@ def main() -> None:
         app()
     except SystemExit as exc:
         code = int(exc.code or 0) if isinstance(exc.code, int) else 2
-        if code == 1 and (minimum_severity != "any" or minimum_verification != "any"):
+        if code == 1 and (
+            minimum_severity != "any" or minimum_verification != "any"
+        ):
             report_path = Path(output_dir) / "scan_report.json"
             try:
                 should_fail = _report_matches_gate(
@@ -371,7 +465,10 @@ def main() -> None:
                     minimum_verification=minimum_verification,
                 )
             except (OSError, ValueError, json.JSONDecodeError) as gate_exc:
-                print(f"Unable to evaluate finding gate: {gate_exc}", file=sys.stderr)
+                print(
+                    f"Unable to evaluate finding gate: {gate_exc}",
+                    file=sys.stderr,
+                )
                 raise SystemExit(2) from gate_exc
             raise SystemExit(1 if should_fail else 0) from None
         raise
