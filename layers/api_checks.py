@@ -37,9 +37,14 @@ class APIPostureScanner:
                         "base_url": swagger.get("base_url"),
                         "paths_total": swagger.get("paths_total"),
                         "operations_total": swagger.get("operations_total"),
+                        "surfaces_with_inputs": swagger.get("surfaces_with_inputs"),
+                        "input_locations": swagger.get("input_locations", {}),
                     },
                     remediation="Restrict public access to internal API specifications if they expose non-public operations.",
-                    reproduction={"method": "GET", "url": swagger.get("url", "")},
+                    reproduction={
+                        "method": "GET",
+                        "url": swagger.get("url", ""),
+                    },
                     verification_status="informational",
                     scanner_mode="api-passive",
                     reproducible=True,
@@ -84,6 +89,8 @@ class APIPostureScanner:
                     url=graphql.get("url", ""),
                     evidence={
                         "types_total": graphql.get("types_total"),
+                        "query_fields_total": graphql.get("query_fields_total"),
+                        "mutation_fields_total": graphql.get("mutation_fields_total"),
                         "status": graphql.get("status"),
                     },
                     remediation="Disable GraphQL introspection on production deployments when schema visibility is unnecessary.",
@@ -96,6 +103,33 @@ class APIPostureScanner:
                     scanner_mode="api-passive",
                     reproducible=True,
                     target={"source": "graphql"},
+                )
+            )
+            findings.append(
+                Finding(
+                    plugin="api_posture",
+                    type="GraphQL Schema Inventory",
+                    title="GraphQL Root Operations Inventoried",
+                    category="api-surface",
+                    severity="INFO",
+                    confidence="HIGH",
+                    surface_id=f"api:graphql-schema:{graphql.get('url', '')}",
+                    url=graphql.get("url", ""),
+                    evidence={
+                        "query_fields": graphql.get("query_fields", [])[:25],
+                        "mutation_fields": graphql.get("mutation_fields", [])[:25],
+                        "query_fields_total": graphql.get("query_fields_total", 0),
+                        "mutation_fields_total": graphql.get("mutation_fields_total", 0),
+                    },
+                    remediation="Review exposed root operations and ensure authorization is enforced in resolvers rather than inferred from schema visibility.",
+                    reproduction={"source": "graphql_introspection"},
+                    verification_status="informational",
+                    scanner_mode="api-passive",
+                    reproducible=True,
+                    target={"source": "graphql"},
+                    notes=[
+                        "The presence of mutation fields is inventory information, not a vulnerability by itself."
+                    ],
                 )
             )
 
