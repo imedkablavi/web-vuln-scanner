@@ -60,6 +60,7 @@ jobs:
           web-vuln-scanner doctor
           web-vuln-profile --help
           web-vuln-sarif --help
+          web-vuln-diff --help
 
   dependency-audit:
     name: Dependency audit and SBOM
@@ -113,6 +114,7 @@ jobs:
           /tmp/wheel-test/bin/web-vuln-scanner doctor
           /tmp/wheel-test/bin/web-vuln-profile --help
           /tmp/wheel-test/bin/web-vuln-sarif --help
+          /tmp/wheel-test/bin/web-vuln-diff --help
       - name: Run installed wheel outside source tree
         run: |
           PORT=$(/tmp/wheel-test/bin/python - <<'PY'
@@ -145,6 +147,7 @@ jobs:
           test "$CODE" -eq 1
           test -s /tmp/wheel-report/scan_report.json
           test -s /tmp/wheel-report/scan_report.html
+          /tmp/wheel-test/bin/web-vuln-diff /tmp/wheel-report/scan_report.json /tmp/wheel-report/scan_report.json --fail-on-new
 
   smoke:
     name: Authorized local smoke
@@ -166,6 +169,7 @@ jobs:
           rm -f .coverage .coverage.*
           SMOKE_COVERAGE=1 python smoke/run_smoke.py
           python -m coverage run --parallel-mode --source=core,layers,plugins,workflows smoke/feature_probe_smoke.py
+          web-vuln-diff smoke_out/scan_report.json smoke_out/scan_report.json --fail-on-new --fail-on-regression
           python -m coverage combine
           python -m coverage report
           python -m coverage xml -o smoke_out/integration-coverage.xml
