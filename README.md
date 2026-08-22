@@ -1,10 +1,18 @@
 # Web Vulnerability Scanner
 
-A Python CLI for scoped web application security testing. It can crawl a target, inventory modern web/API surfaces, inspect common security controls, run a bounded set of active checks, compare authenticated users, and export findings as JSON, HTML, or SARIF.
+A Python CLI for scoped web application security testing. It crawls the supplied target, inventories real web/API surfaces, inspects live responses and browser behavior, runs bounded active probes, compares configured authenticated users, and exports evidence as JSON, HTML, or SARIF.
 
 The default profile is passive. Active payloads are not sent unless an active profile is selected.
 
 > This project is alpha software. Use it only on systems you own or are authorized to test, and review findings before treating them as confirmed vulnerabilities.
+
+## Runtime integrity
+
+The installed scanner does not use a mock vulnerability database, pre-generated findings, demo target responses, or bundled target-specific RBAC/workflow data. Findings come from evidence collected during the current assessment: HTTP responses, browser execution, DNS/TLS observations, API discovery, configured actor comparisons, or explicit user-supplied policy/workflow checks.
+
+Repository fixtures under the QA/smoke suite exist only to test scanner correctness. CI rejects a release wheel or final Docker image if test/smoke fixtures, the QA RBAC matrix, or QA workflow scenarios leak into runtime artifacts.
+
+Random markers and reserved canary values are probe inputs, not fake results. A finding is emitted only when the target's real response or browser behavior satisfies that check's verification rule.
 
 ## What it checks
 
@@ -13,7 +21,7 @@ The scanner currently covers four areas:
 - discovery: HTTP crawling, bounded static JavaScript endpoint extraction, optional HAR discovery seeding, optional Playwright crawling, OpenAPI/Swagger, GraphQL, technology fingerprinting, DNS and TLS inventory;
 - passive web checks: security headers, CSP posture, cookie flags, cache policy, CORS, redirects, multi-runtime stack traces, verbose server errors, JWT posture, and observed data exposure;
 - bounded active checks: SQL injection, reflected markup injection, open redirect, server-side template injection, CRLF/response-header injection, TRACE reflection, same-origin URL-fetch behavior, and conservative same-origin GET/HEAD YAML templates;
-- authorization testing: actor-aware object access checks, RBAC policy verification, authenticated crawling, replay, and workflow scenarios.
+- authorization testing: actor-aware object access checks, RBAC policy verification, authenticated crawling, replay, and workflow scenarios when the user supplies target-specific actor/policy/workflow configuration.
 
 `full-authorized` can additionally confirm a subset of reflected XSS candidates in Chromium using an inert DOM marker. Experimental LFI/path traversal and command-injection code remains disabled by the release maturity policy.
 
@@ -115,7 +123,7 @@ web-vuln-scanner scan https://staging.example \
 
 `--checkpoint` and `--resume` are mutually exclusive. A testcase is recorded only after its request and verification step complete successfully. Failed or interrupted testcases remain eligible for retry.
 
-Checkpoint files contain completed-test fingerprints plus redacted findings. They do not persist cookies, Authorization headers, response bodies, or raw parameter values. Resume is rejected when the target, profile, or relevant active-test configuration does not match. Completed checkpoint files are removed by default to prevent stale reuse.
+Checkpoint files contain completed-test fingerprints plus redacted findings produced by the prior compatible scan. They do not persist cookies, Authorization headers, response bodies, or raw parameter values. Resume is rejected when the target, profile, or relevant active-test configuration does not match. Completed checkpoint files are removed by default to prevent stale reuse.
 
 ### Seed discovery from a HAR
 
@@ -162,9 +170,7 @@ Enabled checks include:
 
 The same-origin URL-fetch check never targets cloud metadata services, private address ranges, or external callback infrastructure. It reports fetch-like behavior rather than claiming internal-network SSRF.
 
-The scanner does not use time-based SQLi payloads in release profiles.
-
-Safe-template defaults are limited to 10 templates and 10 requests in this profile.
+The scanner does not use time-based SQLi payloads in release profiles. Safe-template defaults are limited to 10 templates and 10 requests in this profile.
 
 ### full-authorized
 
@@ -174,7 +180,7 @@ web-vuln-scanner scan https://target.example \
   --config config/default_config.yaml
 ```
 
-This profile keeps the stable active checks and also enables browser-assisted discovery. Auth actors, RBAC verification, and workflows are available when configured. The safe-template budget increases to 25 templates/requests.
+This profile keeps the stable active checks and also enables browser-assisted discovery. Auth actors, RBAC verification, and workflows become useful only after configuring target-specific real accounts, endpoints, policy, and/or workflow files. The installed defaults contain no live target endpoints or enabled actors. The safe-template budget increases to 25 templates/requests.
 
 Browser XSS confirmation is bounded to a small set of GET/query candidates. Chromium must execute an inert handler that only sets a DOM marker before the condition can be marked `verified`.
 
@@ -186,25 +192,25 @@ The active checks are intentionally narrow.
 
 ### SQL injection
 
-Uses bounded error and response-differential probes. Boolean checks compare responses against the same baseline. A generic response change is not reported as verified SQL injection.
+Uses bounded error and response-differential probes against the target. Boolean checks compare live responses against the same live baseline. A generic response change is not reported as verified SQL injection.
 
 ### Reflected markup and browser XSS
 
-The safe-active reflected-markup check injects an inert `<wvs-probe>` element and parses the returned HTML. It reports only when that element is reconstructed as markup; HTML reconstruction alone is not described as JavaScript execution.
+The safe-active reflected-markup check injects an inert `<wvs-probe>` element and parses the returned HTML. It reports only when the real response reconstructs that element as markup; HTML reconstruction alone is not described as JavaScript execution.
 
-In `full-authorized`, the browser verifier can run a separate inert event-handler canary against bounded GET/query candidates. A result is marked `verified` only if Chromium executes the handler and writes the expected DOM marker.
+In `full-authorized`, the browser verifier can run a separate inert event-handler canary against bounded GET/query candidates. A result is marked `verified` only if Chromium loads the target and actually executes the handler, writing the expected DOM marker.
 
 ### Open redirect
 
-Tests common redirect parameters with a destination under `wvs.invalid`. Redirects are not followed. A finding requires the response `Location` to resolve to the exact reserved canary destination.
+Tests common redirect parameters with a destination under `wvs.invalid`. Redirects are not followed. A finding requires the target response `Location` to resolve to the exact reserved canary destination.
 
 ### Server-side template injection
 
-Tests observed query parameters with arithmetic expressions. A finding requires two distinct expressions to produce their two expected evaluated values. The check does not use file reads, command execution, external callbacks, or timing primitives.
+Tests observed query parameters with arithmetic expressions. A finding requires two distinct expressions to produce their two expected evaluated values in live responses. The check does not use file reads, command execution, external callbacks, or timing primitives.
 
 ### CRLF / response-header injection
 
-Places a CR/LF canary in one observed query parameter and checks whether the server creates the dedicated canary response header. It does not send cache-poisoning or second-response payloads.
+Places a CR/LF canary in one observed query parameter and checks whether the target creates the dedicated canary response header. It does not send cache-poisoning or second-response payloads.
 
 ### TRACE
 
@@ -222,6 +228,8 @@ The safe-template engine is an intentionally constrained extension mechanism for
 - Apache `server-status` exposure;
 - Nginx `stub_status` exposure;
 - Go `/debug/vars` expvar exposure.
+
+Each template sends a real GET/HEAD through the same scoped request manager and evaluates the target's actual response. Templates do not contain stored findings or canned responses.
 
 The engine accepts only GET/HEAD requests to one same-origin path and status/word/header matchers. It does **not** support raw HTTP, external origins, redirects, DSL/eval, shell commands, callbacks, file reads, template variables, or state-changing HTTP methods. Body inspection and request/template counts are bounded.
 
@@ -298,7 +306,7 @@ Avoid broad selectors on production systems.
 
 ## Passive intelligence
 
-Passive web analysis records conservative technology observations from response headers, cookie **names**, generator metadata, and framework-specific HTML markers. Technology detection is inventory and does not automatically assert that a detected version is vulnerable.
+Passive web analysis records conservative technology observations from live response headers, cookie **names**, generator metadata, and framework-specific HTML markers. Technology detection is inventory and does not automatically assert that a detected version is vulnerable.
 
 Additional posture analysis includes:
 
@@ -317,7 +325,7 @@ Auth actors are defined in the config and should get credentials from environmen
 
 The scanner can compare two authenticated users, evaluate a configured RBAC matrix, run authenticated crawls, and replay verified authorization findings. Access-control findings are downgraded when required actor state or comparison evidence is missing.
 
-The sample actors in `config/default_config.yaml` are placeholders. Replace their URLs/selectors and set environment variables only for authorized test accounts.
+The actor entries in `config/default_config.yaml` are disabled schema stubs. They contain no target URLs and do not authenticate anywhere until you supply target-specific endpoints/selectors and enable them. The installed runtime also does not bundle the repository's QA RBAC matrix or QA workflow scenarios.
 
 ## API discovery
 
@@ -330,7 +338,7 @@ web-vuln-scanner scan https://target.example \
   --graphql https://target.example/graphql
 ```
 
-OpenAPI 3 discovery inventories query, path, header, cookie, and request-body inputs and materializes path placeholders into testable surfaces. GraphQL introspection records root queries, mutations, and their arguments rather than only reporting a type count.
+OpenAPI 3 discovery inventories actual query, path, header, cookie, and request-body inputs and materializes path placeholders into testable surfaces. GraphQL introspection records root queries, mutations, and their arguments rather than only reporting a type count.
 
 API requests pass through the same request manager and scope policy as crawler traffic.
 
@@ -472,7 +480,7 @@ Runtime failures and partial scans are never converted into success by these gat
 
 ## Configuration
 
-The default config is `config/default_config.yaml`. Active web probes, safe templates, HAR discovery seeding, attack policy, checkpoint behavior, auth actors, and scope are all visible there. `web-vuln-scanner validate-config` validates release-critical types and bounds before the scan starts.
+The default config is `config/default_config.yaml`. It is deliberately target-neutral: no enabled auth actor, no target-specific login/API endpoint, no bundled RBAC policy, and no default workflow directory. Active web probes, safe templates, HAR discovery seeding, attack policy, checkpoint behavior, actor schema, and scope are visible there. `web-vuln-scanner validate-config` validates release-critical types and bounds before the scan starts.
 
 Profiles override active `enabled` flags and request budgets as needed. XML internal-entity probing remains off in every built-in profile and requires explicit configuration because XML POST/PUT/PATCH routes may change application state.
 
@@ -483,7 +491,7 @@ docker build -t web-vuln-scanner .
 docker run --rm web-vuln-scanner --help
 ```
 
-The image runs as Playwright's non-root `pwuser`. CI builds the image, checks that `/app` is writable by the runtime user, and runs a local passive scan inside the container.
+The final image is built from the wheel in a multi-stage build and runs as Playwright's non-root `pwuser`. It does not copy `tests/` or `smoke/` into runtime. CI verifies those paths and target-specific QA policy/workflow resources are absent, then runs a live passive E2E request against a temporary local HTTP server.
 
 ## Development checks
 
@@ -495,11 +503,11 @@ python -m pip_audit -r requirements.txt
 python -m build
 ```
 
-The CI workflow also tests Python 3.10, 3.11, and 3.12, installs the built wheel in a clean virtual environment, verifies the packaged safe-template YAML files from that wheel, exercises `web-vuln-diff` and sanitized HAR import, runs the local browser/auth/workflow smoke target, checks smoke artifacts for test secrets, converts the report to SARIF, and exercises the Docker runtime.
+The CI workflow tests Python 3.10, 3.11, and 3.12, installs the built wheel in a clean virtual environment, verifies packaged safe-template YAML files, rejects fixture leakage into wheel/Docker runtime, exercises `web-vuln-diff` and sanitized HAR import, runs source-only local browser/auth/workflow smoke fixtures, checks smoke artifacts for test secrets, converts the report to SARIF, and exercises the Docker runtime.
 
 ## Adding a check
 
-Before promoting a new check to stable, add both positive and negative fixtures. A stable check should have a bounded request count, clear verification semantics, a useful remediation, and a reason it will not report ordinary reflection or response noise as a vulnerability.
+Before promoting a new check to stable, add both positive and negative fixtures. Fixtures validate the implementation; they must never become runtime findings or target data. A stable check should have a bounded request count, clear verification semantics, a useful remediation, and a reason it will not report ordinary reflection or response noise as a vulnerability.
 
 For declarative exposure checks, prefer the safe-template schema when GET/HEAD plus deterministic response matchers are sufficient. Do not extend the release engine with raw HTTP, shell execution, arbitrary DSL/eval, or external callback behavior.
 
