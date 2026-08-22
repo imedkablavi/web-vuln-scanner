@@ -3,7 +3,6 @@ scanner:
   profile: passive
   scope:
     allowlist: []
-    blocklist: ["logout", "delete", "remove"]
     include_domains: []
     exclude_paths: ["/logout", "/signout"]
     allow_private: false
@@ -13,8 +12,6 @@ scanner:
     max_depth: 3
     max_urls: 2000
     max_url_length: 2048
-    respect_robots: false
-    dedup: "fingerprint"
   concurrency:
     threads: 5
     per_host_concurrency: 2
@@ -31,6 +28,10 @@ scanner:
     slow_mo: 0
     capture_trace: true
     capture_screenshots: true
+    capture_auth_trace: false
+    capture_auth_screenshots: false
+    retain_storage_state: false
+    auth_timeout_seconds: 30
     interactions:
       enabled: false
       submit_forms: false
@@ -224,7 +225,6 @@ scanner:
       read: 20
     max_retries: 3
     max_redirects: 5
-    user_agent_pool: []
     follow_redirects: false
 logging:
   level: "INFO"
