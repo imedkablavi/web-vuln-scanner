@@ -1,10 +1,17 @@
+from __future__ import annotations
+
+import re
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from urllib.parse import parse_qs, urljoin, urlparse
+
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, parse_qs
 
 from .har_import import load_har_seed_file
 from .js_discovery import JavaScriptEndpointDiscoverer
 from .models import AttackSurface, InputField
 from .scope import ScopePolicy
+from .site_map import SiteMapBuilder
 from .utils import logger, normalize_url
 
 
@@ -13,12 +20,12 @@ class Crawler:
         self.requester = request_manager
         self.config = config
         self.visited = set()
+        self.surface_fingerprints = set()
         self.surfaces = []
         crawler_cfg = config.get("crawler", {})
         self.max_depth = crawler_cfg.get("max_depth", config["scope"]["max_depth"])
         self.max_urls = crawler_cfg.get("max_urls", 2000)
         self.max_url_length = crawler_cfg.get("max_url_length", 2048)
-        self.dedup = crawler_cfg.get("dedup", "fingerprint")
         scope = config.get("scope", {})
         self.exclude_paths = scope.get("exclude_paths", [])
         self.scope_policy = getattr(request_manager, "scope_policy", None) or ScopePolicy(config)
@@ -36,7 +43,51 @@ class Crawler:
             "errors": [],
         }
         self._har_seeds_processed = False
+
+        discovery_cfg = crawler_cfg.get("discovery_files", {}) or {}
+        self.discovery_robots = bool(discovery_cfg.get("robots_txt", True))
+        self.discovery_sitemap = bool(discovery_cfg.get("sitemap_xml", True))
+        self.max_sitemap_urls = max(0, int(discovery_cfg.get("max_sitemap_urls", 500) or 500))
+        self.max_sitemap_files = max(1, int(discovery_cfg.get("max_sitemap_files", 10) or 10))
+        self.max_discovery_file_bytes = max(
+            1024,
+            int(discovery_cfg.get("max_file_bytes", 2 * 1024 * 1024) or 2 * 1024 * 1024),
+        )
+        self.discovery_seed_urls = []
+        self.discovery_file_report = {
+            "robots": {"attempted": False, "status": None, "links": 0, "sitemaps": 0},
+            "sitemaps": {"files_fetched": 0, "urls": 0, "truncated": False},
+            "errors": [],
+        }
+        self._discovery_files_processed = False
+        self._root_crawl_active = False
+
+        site_map_cfg = crawler_cfg.get("site_map", {}) or {}
+        self.site_map_enabled = bool(site_map_cfg.get("enabled", True))
+        self.site_map_output_file = str(
+            site_map_cfg.get("output_file", "crawler_site_map.json") or "crawler_site_map.json"
+        )
+        self.site_map = SiteMapBuilder(max_entries=int(site_map_cfg.get("max_entries", 5000) or 5000))
+        self.output_dir = Path(config.get("output", {}).get("directory", "reports"))
+
         self._load_har_seeds(crawler_cfg)
+
+    def _request_get(self, url, actor=None):
+        if actor is not None and hasattr(self.requester, "send_as_actor"):
+            return self.requester.send_as_actor("GET", url, actor=actor)
+        return self.requester.send("GET", url)
+
+    def _append_surface(self, surface):
+        self.surfaces.append(surface)
+        if self.site_map_enabled:
+            self.site_map.record_surface(surface)
+
+    def _surface_seen(self, method, url, params_keys, input_names):
+        fp = self._fingerprint(method, url, params_keys, input_names)
+        if fp in self.surface_fingerprints:
+            return True
+        self.surface_fingerprints.add(fp)
+        return False
 
     def _load_har_seeds(self, crawler_cfg):
         cfg = crawler_cfg.get("har_seed", {}) or {}
@@ -80,18 +131,18 @@ class Crawler:
             for surface in surfaces:
                 if surface.url not in self.har_seed_urls:
                     self.har_seed_urls.append(surface.url)
+                if self.site_map_enabled:
+                    self.site_map.record_surface(surface)
                 if not surface.meta.get("active_eligible", False):
                     continue
-                fp = self._fingerprint(
+                if self._surface_seen(
                     surface.method,
                     surface.url,
                     surface.params.keys(),
                     [item.name for item in surface.inputs],
-                )
-                if fp in self.visited:
+                ):
                     continue
-                self.visited.add(fp)
-                self.surfaces.append(surface)
+                self._append_surface(surface)
 
     def extract_csrf_token(self, soup):
         token_input = soup.find("input", {"name": ["csrf_token", "csrf", "_csrf", "authenticity_token"]})
@@ -105,6 +156,10 @@ class Crawler:
         return None, None
 
     def _in_scope(self, url):
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return False
+        if len(url) > self.max_url_length:
+            return False
         # DNS is validated by RequestManager immediately before dispatch. Avoid
         # repeated DNS lookups for every discovered link while still applying
         # the exact same URL/domain/path policy during discovery.
@@ -112,6 +167,205 @@ class Crawler:
 
     def _fingerprint(self, method, url, params_keys, input_names):
         return f"{method}:{url}:{sorted(params_keys)}:{sorted(input_names)}"
+
+    def _remember_discovered_url(self, url, source, *, depth=None, actor=None):
+        if not self._in_scope(url):
+            return False
+        if url not in self.discovery_seed_urls:
+            self.discovery_seed_urls.append(url)
+        if self.site_map_enabled:
+            self.site_map.record_url(
+                url,
+                source=source,
+                requested=False,
+                depth=depth,
+                actor_id=getattr(actor, "actor_id", ""),
+            )
+        self._record_query_surface_from_url(url, source, depth=depth, actor=actor)
+        return True
+
+    def _record_query_surface_from_url(self, url, source, *, depth=None, actor=None):
+        parsed = urlparse(url)
+        inputs = parse_qs(parsed.query, keep_blank_values=True)
+        if not inputs:
+            return
+        flat_inputs = {key: values[0] if values else "" for key, values in inputs.items()}
+        surface_inputs = [
+            InputField(name=key, value=values[0] if values else "", kind="query")
+            for key, values in inputs.items()
+        ]
+        url_clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if self._surface_seen(
+            "GET",
+            url_clean,
+            flat_inputs.keys(),
+            [item.name for item in surface_inputs],
+        ):
+            return
+        self._append_surface(
+            AttackSurface(
+                url=url_clean,
+                method="GET",
+                params=flat_inputs,
+                inputs=surface_inputs,
+                source=source,
+                meta={
+                    "depth": depth,
+                    "visible_to_actor": getattr(actor, "actor_id", ""),
+                },
+            )
+        )
+
+    @staticmethod
+    def _origin(url):
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _bounded_text(self, response):
+        content = getattr(response, "content", b"") or b""
+        if content and len(content) > self.max_discovery_file_bytes:
+            return None
+        text = getattr(response, "text", "") or ""
+        if len(text.encode("utf-8", errors="ignore")) > self.max_discovery_file_bytes:
+            return None
+        return text
+
+    def _discover_robots(self, start_url, actor=None):
+        report = self.discovery_file_report["robots"]
+        report["attempted"] = True
+        robots_url = urljoin(self._origin(start_url) + "/", "robots.txt")
+        if not self._in_scope(robots_url):
+            return []
+        sitemap_urls = []
+        try:
+            resp = self._request_get(robots_url, actor=actor)
+            report["status"] = int(resp.status_code)
+            if self.site_map_enabled:
+                self.site_map.record_url(
+                    robots_url,
+                    source="robots-file",
+                    requested=True,
+                    depth=0,
+                    actor_id=getattr(actor, "actor_id", ""),
+                )
+            if resp.status_code != 200:
+                return []
+            text = self._bounded_text(resp)
+            if text is None:
+                raise ValueError("robots.txt exceeded crawler.discovery_files.max_file_bytes")
+
+            for raw_line in text.splitlines():
+                line = raw_line.split("#", 1)[0].strip()
+                if not line or ":" not in line:
+                    continue
+                directive, value = line.split(":", 1)
+                directive = directive.strip().lower()
+                value = value.strip()
+                if not value:
+                    continue
+                if directive == "sitemap":
+                    sitemap_url = urljoin(robots_url, value)
+                    if self._in_scope(sitemap_url) and sitemap_url not in sitemap_urls:
+                        sitemap_urls.append(sitemap_url)
+                        report["sitemaps"] += 1
+                    continue
+                if directive not in {"allow", "disallow"}:
+                    continue
+                # robots paths can contain wildcard rules. They are useful policy
+                # patterns but are not concrete URLs, so do not turn them into
+                # crawler requests.
+                if "*" in value or "$" in value:
+                    continue
+                candidate = urljoin(self._origin(start_url) + "/", value.lstrip("/"))
+                source = f"robots-{directive}"
+                if self._remember_discovered_url(candidate, source, depth=1, actor=actor):
+                    report["links"] += 1
+        except Exception as exc:
+            error = {"kind": "robots", "url": robots_url, "error": str(exc)}
+            self.discovery_file_report["errors"].append(error)
+            self.errors.append(error)
+        return sitemap_urls
+
+    @staticmethod
+    def _local_xml_name(tag):
+        return str(tag or "").rsplit("}", 1)[-1].lower()
+
+    def _discover_sitemaps(self, start_url, extra_sitemaps=None, actor=None):
+        report = self.discovery_file_report["sitemaps"]
+        queue = []
+        default_url = urljoin(self._origin(start_url) + "/", "sitemap.xml")
+        if self.discovery_sitemap:
+            queue.append(default_url)
+        for item in extra_sitemaps or []:
+            if item not in queue:
+                queue.append(item)
+
+        seen_files = set()
+        while queue and len(seen_files) < self.max_sitemap_files:
+            sitemap_url = queue.pop(0)
+            if sitemap_url in seen_files or not self._in_scope(sitemap_url):
+                continue
+            seen_files.add(sitemap_url)
+            try:
+                resp = self._request_get(sitemap_url, actor=actor)
+                report["files_fetched"] += 1
+                if self.site_map_enabled:
+                    self.site_map.record_url(
+                        sitemap_url,
+                        source="sitemap-file",
+                        requested=True,
+                        depth=0,
+                        actor_id=getattr(actor, "actor_id", ""),
+                    )
+                if resp.status_code != 200:
+                    continue
+                text = self._bounded_text(resp)
+                if text is None:
+                    raise ValueError("sitemap exceeded crawler.discovery_files.max_file_bytes")
+                root = ET.fromstring(text)
+                root_name = self._local_xml_name(root.tag)
+                loc_values = [
+                    str(node.text or "").strip()
+                    for node in root.iter()
+                    if self._local_xml_name(node.tag) == "loc" and str(node.text or "").strip()
+                ]
+                if root_name == "sitemapindex":
+                    for loc in loc_values:
+                        child = urljoin(sitemap_url, loc)
+                        if self._in_scope(child) and child not in seen_files and child not in queue:
+                            queue.append(child)
+                    continue
+
+                for loc in loc_values:
+                    if report["urls"] >= self.max_sitemap_urls:
+                        report["truncated"] = True
+                        break
+                    candidate = urljoin(sitemap_url, loc)
+                    if self._remember_discovered_url(candidate, "sitemap", depth=1, actor=actor):
+                        report["urls"] += 1
+                if report["truncated"]:
+                    break
+            except ET.ParseError as exc:
+                error = {"kind": "sitemap_parse", "url": sitemap_url, "error": str(exc)}
+                self.discovery_file_report["errors"].append(error)
+                self.errors.append(error)
+            except Exception as exc:
+                error = {"kind": "sitemap", "url": sitemap_url, "error": str(exc)}
+                self.discovery_file_report["errors"].append(error)
+                self.errors.append(error)
+
+        if queue and len(seen_files) >= self.max_sitemap_files:
+            report["truncated"] = True
+
+    def _discover_well_known(self, start_url, actor=None):
+        if self._discovery_files_processed:
+            return
+        self._discovery_files_processed = True
+        sitemap_urls = []
+        if self.discovery_robots:
+            sitemap_urls = self._discover_robots(start_url, actor=actor)
+        if self.discovery_sitemap or sitemap_urls:
+            self._discover_sitemaps(start_url, sitemap_urls, actor=actor)
 
     def _record_javascript_endpoints(self, soup, start_url, depth, actor=None):
         entries = self.js_discovery.discover_from_soup(soup, start_url, actor=actor)
@@ -121,6 +375,15 @@ class Crawler:
             if not url or url in self.js_endpoints:
                 continue
             self.js_endpoints.append(url)
+            if self.site_map_enabled and self._in_scope(url):
+                self.site_map.record_url(
+                    url,
+                    source="javascript-static",
+                    method=method,
+                    requested=False,
+                    depth=depth,
+                    actor_id=getattr(actor, "actor_id", ""),
+                )
 
             # Static JavaScript discovery is inventory-first. Only GET endpoints
             # with explicit query parameters become attack surfaces; inferred
@@ -129,25 +392,23 @@ class Crawler:
             if method != "GET":
                 continue
             parsed = urlparse(url)
-            inputs = parse_qs(parsed.query)
+            inputs = parse_qs(parsed.query, keep_blank_values=True)
             if not inputs:
                 continue
-            flat_inputs = {key: values[0] for key, values in inputs.items()}
+            flat_inputs = {key: values[0] if values else "" for key, values in inputs.items()}
             surface_inputs = [
-                InputField(name=key, value=values[0], kind="query")
+                InputField(name=key, value=values[0] if values else "", kind="query")
                 for key, values in inputs.items()
             ]
             url_clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-            fp = self._fingerprint(
+            if self._surface_seen(
                 "GET",
                 url_clean,
                 flat_inputs.keys(),
                 [item.name for item in surface_inputs],
-            )
-            if fp in self.visited:
+            ):
                 continue
-            self.visited.add(fp)
-            self.surfaces.append(
+            self._append_surface(
                 AttackSurface(
                     url=url_clean,
                     method="GET",
@@ -162,111 +423,209 @@ class Crawler:
                 )
             )
 
-    def crawl(self, start_url, depth=0, actor=None):
-        if depth == 0 and not self._har_seeds_processed:
-            self._har_seeds_processed = True
-            root_normalized = normalize_url(start_url)
-            for seed_url in list(self.har_seed_urls):
-                if normalize_url(seed_url) == root_normalized:
+    @staticmethod
+    def _field_value(tag):
+        if tag.name == "textarea":
+            return tag.get_text() or ""
+        if tag.name == "select":
+            selected = tag.find("option", selected=True) or tag.find("option")
+            if selected is None:
+                return ""
+            return selected.get("value", selected.get_text() or "")
+        return tag.get("value", "")
+
+    def _record_forms(self, soup, start_url, depth, actor=None):
+        base_tag = soup.find("base", href=True)
+        document_base = urljoin(start_url, base_tag.get("href")) if base_tag else start_url
+        for form in soup.find_all("form"):
+            declared_method = str(form.get("method", "get") or "get").strip().upper()
+            if declared_method == "DIALOG":
+                continue
+            method = declared_method if declared_method in {"GET", "POST"} else "GET"
+            action = urljoin(document_base, form.get("action", ""))
+            if not self._in_scope(action):
+                continue
+            values = {}
+            field_meta = []
+
+            for input_tag in form.find_all(["input", "textarea", "select"]):
+                name = str(input_tag.get("name", "") or "").strip()
+                if not name:
                     continue
-                self.crawl(seed_url, depth=0, actor=actor)
+                field_type = (
+                    str(input_tag.get("type", "text") or "text").strip().lower()
+                    if input_tag.name == "input"
+                    else input_tag.name
+                )
+                if field_type in {"submit", "button", "reset", "image", "file"}:
+                    continue
+                values[name] = self._field_value(input_tag)
+                field_meta.append({"name": name, "type": field_type})
 
-        if depth > self.max_depth or len(self.visited) >= self.max_urls:
-            return
-        if not self._in_scope(start_url):
-            return
+            csrf_name, csrf_value = self.extract_csrf_token(form)
+            if csrf_name and csrf_value and csrf_name not in values:
+                values[csrf_name] = csrf_value
+                field_meta.append({"name": csrf_name, "type": "csrf"})
 
-        normalized = normalize_url(start_url)
-        if normalized in self.visited:
-            return
-        self.visited.add(normalized)
+            kind = "body" if method == "POST" else "query"
+            surface_inputs = [InputField(name=k, value=v, kind=kind) for k, v in values.items()]
+            url_clean = normalize_url(action)
+            params = {} if method == "POST" else values
+            if self._surface_seen(
+                method,
+                url_clean,
+                params.keys(),
+                [item.name for item in surface_inputs],
+            ):
+                continue
+            self._append_surface(
+                AttackSurface(
+                    url=url_clean,
+                    method=method,
+                    params=params,
+                    inputs=surface_inputs,
+                    source="html-form",
+                    meta={
+                        "depth": depth,
+                        "visible_to_actor": getattr(actor, "actor_id", ""),
+                        "declared_method": declared_method,
+                        "enctype": str(form.get("enctype", "application/x-www-form-urlencoded")),
+                        "fields": field_meta,
+                    },
+                )
+            )
 
-        logger.info(f"Crawling: {start_url} (Depth: {depth})")
+    def _record_meta_refresh(self, soup, start_url, depth, actor=None):
+        for tag in soup.find_all("meta"):
+            if str(tag.get("http-equiv", "")).strip().lower() != "refresh":
+                continue
+            content = str(tag.get("content", "") or "")
+            match = re.search(r"(?:^|;)\s*url\s*=\s*['\"]?([^'\";]+)", content, re.I)
+            if not match:
+                continue
+            candidate = urljoin(start_url, match.group(1).strip())
+            if self._remember_discovered_url(candidate, "meta-refresh", depth=depth + 1, actor=actor):
+                self.crawl(candidate, depth + 1, actor=actor)
+
+    def _write_site_map(self, actor=None):
+        if not self.site_map_enabled:
+            return
+        filename = self.site_map_output_file
+        actor_id = str(getattr(actor, "actor_id", "") or "").strip()
+        if actor_id:
+            safe_actor = re.sub(r"[^A-Za-z0-9_.-]+", "-", actor_id).strip("-") or "actor"
+            stem = Path(filename).stem
+            suffix = Path(filename).suffix or ".json"
+            filename = f"{stem}-{safe_actor}{suffix}"
+        try:
+            path = Path(filename)
+            if not path.is_absolute():
+                path = self.output_dir / path
+            self.site_map.write(path)
+        except Exception as exc:
+            error = {"kind": "site_map", "error": str(exc)}
+            self.errors.append(error)
+            logger.warning(f"Unable to write crawler site map: {exc}")
+
+    def crawl(self, start_url, depth=0, actor=None):
+        is_root = depth == 0 and not self._root_crawl_active
+        if is_root:
+            self._root_crawl_active = True
+            self._discover_well_known(start_url, actor=actor)
 
         try:
-            if actor is not None and hasattr(self.requester, "send_as_actor"):
-                resp = self.requester.send_as_actor("GET", start_url, actor=actor)
-            else:
-                resp = self.requester.send("GET", start_url)
+            if depth == 0 and not self._har_seeds_processed:
+                self._har_seeds_processed = True
+                root_normalized = normalize_url(start_url)
+                for seed_url in list(self.har_seed_urls):
+                    if normalize_url(seed_url) == root_normalized:
+                        continue
+                    self.crawl(seed_url, depth=1, actor=actor)
+                for seed_url in list(self.discovery_seed_urls):
+                    if normalize_url(seed_url) == root_normalized:
+                        continue
+                    self.crawl(seed_url, depth=1, actor=actor)
+
+            if depth > self.max_depth or len(self.visited) >= self.max_urls:
+                return
+            if not self._in_scope(start_url):
+                return
+
+            normalized = normalize_url(start_url)
+            if normalized in self.visited:
+                return
+            self.visited.add(normalized)
+            if self.site_map_enabled:
+                self.site_map.record_url(
+                    start_url,
+                    source="crawler-request",
+                    requested=False,
+                    depth=depth,
+                    actor_id=getattr(actor, "actor_id", ""),
+                )
+
+            logger.info(f"Crawling: {start_url} (Depth: {depth})")
+
+            resp = self._request_get(start_url, actor=actor)
+            if self.site_map_enabled:
+                self.site_map.record_url(
+                    start_url,
+                    source="crawler-response",
+                    requested=True,
+                    depth=depth,
+                    actor_id=getattr(actor, "actor_id", ""),
+                )
             if resp.status_code != 200:
                 return
             self.pages_visited.append(start_url)
 
             soup = BeautifulSoup(resp.text, "html.parser")
             self._record_javascript_endpoints(soup, start_url, depth, actor=actor)
+            self._record_forms(soup, start_url, depth, actor=actor)
+            self._record_meta_refresh(soup, start_url, depth, actor=actor)
 
-            for form in soup.find_all("form"):
-                action = urljoin(start_url, form.get("action", ""))
-                if not self._in_scope(action):
-                    continue
-                method = form.get("method", "get").upper()
-                inputs = {}
-
-                for input_tag in form.find_all(["input", "textarea"]):
-                    name = input_tag.get("name")
-                    if name:
-                        inputs[name] = input_tag.get("value", "")
-
-                csrf_name, csrf_value = self.extract_csrf_token(soup)
-                if csrf_name and csrf_value:
-                    inputs[csrf_name] = csrf_value
-                    logger.debug(f"CSRF Token found and added to form: {action}")
-
-                surface_inputs = [
-                    InputField(name=k, value=v, kind="body" if method == "POST" else "query")
-                    for k, v in inputs.items()
-                ]
-                url_clean = normalize_url(action)
-                fp = self._fingerprint(
-                    method,
-                    url_clean,
-                    (inputs if method != "POST" else {}).keys(),
-                    [i.name for i in surface_inputs],
-                )
-                if fp in self.visited:
-                    continue
-                self.visited.add(fp)
-                self.surfaces.append(
-                    AttackSurface(
-                        url=url_clean,
-                        method=method,
-                        params={} if method == "POST" else inputs,
-                        inputs=surface_inputs if method == "POST" else [],
-                        source="crawler",
-                        meta={"depth": depth, "visible_to_actor": getattr(actor, "actor_id", "")},
-                    )
-                )
-
+            base_tag = soup.find("base", href=True)
+            document_base = urljoin(start_url, base_tag.get("href")) if base_tag else start_url
             for link in soup.find_all("a", href=True):
-                full_url = urljoin(start_url, link["href"])
+                full_url = urljoin(document_base, link["href"])
                 if not self._in_scope(full_url):
                     continue
-
-                parsed = urlparse(full_url)
-                inputs = parse_qs(parsed.query)
-                if inputs:
-                    flat_inputs = {k: v[0] for k, v in inputs.items()}
-                    surface_inputs = [InputField(name=k, value=v[0], kind="query") for k, v in inputs.items()]
-                    url_clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                    fp = self._fingerprint("GET", url_clean, flat_inputs.keys(), [i.name for i in surface_inputs])
-                    if fp not in self.visited:
-                        self.visited.add(fp)
-                        self.surfaces.append(
-                            AttackSurface(
-                                url=url_clean,
-                                method="GET",
-                                params=flat_inputs,
-                                inputs=surface_inputs,
-                                source="crawler",
-                                meta={"depth": depth, "href": link["href"], "visible_to_actor": getattr(actor, "actor_id", "")},
-                            )
-                        )
-
+                if self.site_map_enabled:
+                    self.site_map.record_url(
+                        full_url,
+                        source="html-link",
+                        requested=False,
+                        depth=depth + 1,
+                        actor_id=getattr(actor, "actor_id", ""),
+                    )
+                self._record_query_surface_from_url(
+                    full_url,
+                    "html-link",
+                    depth=depth + 1,
+                    actor=actor,
+                )
                 self.crawl(full_url, depth + 1, actor=actor)
+
+            for frame in soup.find_all(["iframe", "frame"], src=True):
+                frame_url = urljoin(document_base, frame.get("src", ""))
+                if not self._in_scope(frame_url):
+                    continue
+                if self.site_map_enabled:
+                    self.site_map.record_url(
+                        frame_url,
+                        source="html-frame",
+                        requested=False,
+                        depth=depth + 1,
+                        actor_id=getattr(actor, "actor_id", ""),
+                    )
+                self.crawl(frame_url, depth + 1, actor=actor)
 
         except Exception as exc:
             logger.error(f"Crawl error on {start_url}: {exc}")
             self.errors.append({"url": start_url, "error": str(exc)})
+        finally:
+            if is_root:
+                self._write_site_map(actor=actor)
 
     def get_surfaces(self):
         return self.surfaces
@@ -276,3 +635,9 @@ class Crawler:
 
     def get_har_seed_report(self):
         return self.har_seed_report
+
+    def get_discovery_file_report(self):
+        return self.discovery_file_report
+
+    def get_site_map_report(self):
+        return self.site_map.to_dict()
