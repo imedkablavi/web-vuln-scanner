@@ -18,7 +18,6 @@ class TestCase:
     kind: str  # query/body/path/header/cookie
     payload: str
     method_override: str | None = None
-    allow_redirects: bool | None = None
     notes: str | None = None
     baseline_key: str = ""
 
@@ -82,13 +81,7 @@ class BasePlugin(ABC):
             tests = self.generate_tests(surface, context)[: self.max_tests_per_surface(getattr(self, "config", {}))]
             for tc in tests:
                 try:
-                    resp = self.session.send_surface(
-                        surface,
-                        tc.param,
-                        tc.payload,
-                        method_override=tc.method_override,
-                        allow_redirects=tc.allow_redirects,
-                    )
+                    resp = self.session.send_surface(surface, tc.param, tc.payload)
                     vres = self.verify(tc, baseline, resp, context)
                     if vres.is_verified:
                         findings.append(self.build_finding(tc, vres, surface))
