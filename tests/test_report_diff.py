@@ -29,9 +29,15 @@ def finding(
     }
 
 
-def test_fingerprint_is_stable_across_evidence_and_query_order():
-    first = finding(url="https://example.test/app?b=2&a=1")
-    second = finding(url="https://EXAMPLE.test/app?a=1&b=2")
+def test_fingerprint_is_stable_across_evidence_query_order_and_title_wording():
+    first = finding(
+        url="https://example.test/app?b=2&a=1",
+        title="Browser security headers are incomplete",
+    )
+    second = finding(
+        url="https://EXAMPLE.test/app?a=1&b=2",
+        title="Missing recommended browser headers",
+    )
     second["evidence"] = {"different": "value"}
     assert finding_fingerprint(first) == finding_fingerprint(second)
 
@@ -41,7 +47,7 @@ def test_diff_reports_new_fixed_changed_and_unchanged():
     changed_before = finding(type_="SQL Injection", title="SQLi", severity="MEDIUM")
     changed_after = finding(
         type_="SQL Injection",
-        title="SQLi",
+        title="SQL injection confirmed",
         severity="HIGH",
         verification="verified",
     )
@@ -64,6 +70,16 @@ def test_diff_reports_new_fixed_changed_and_unchanged():
     assert diff["fixed"][0]["type"] == "Verbose Error"
     assert diff["changed"][0]["before"]["severity"] == "MEDIUM"
     assert diff["changed"][0]["after"]["severity"] == "HIGH"
+
+
+def test_title_only_change_remains_unchanged_issue():
+    before = finding(title="Old wording")
+    after = finding(title="Improved wording")
+    diff = compare_report_data({"findings": [before]}, {"findings": [after]})
+    assert diff["summary"]["new"] == 0
+    assert diff["summary"]["fixed"] == 0
+    assert diff["summary"]["changed"] == 0
+    assert diff["summary"]["unchanged"] == 1
 
 
 def test_new_finding_gate_respects_minimum_severity():
