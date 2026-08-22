@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import asyncio
 import os
+import shutil
+import tempfile
 import threading
 from typing import Any, Dict, List
 from urllib.parse import urlparse
@@ -24,6 +27,26 @@ class BrowserAuthEngine:
             os.chmod(self.artifacts_dir, 0o700)
         except OSError:
             pass
+
+        browser_cfg = config.get("browser", {})
+        self.capture_auth_trace = bool(
+            browser_cfg.get("capture_auth_trace", False)
+        )
+        self.capture_auth_screenshots = bool(
+            browser_cfg.get("capture_auth_screenshots", False)
+        )
+        self.retain_storage_state = bool(
+            browser_cfg.get("retain_storage_state", False)
+        )
+        self.auth_timeout_seconds = max(
+            1.0, float(browser_cfg.get("auth_timeout_seconds", 30) or 30)
+        )
+        self._ephemeral_dir = tempfile.mkdtemp(prefix="webvuln-auth-")
+        try:
+            os.chmod(self._ephemeral_dir, 0o700)
+        except OSError:
+            pass
+        atexit.register(self.cleanup)
         self.blocked_requests: List[str] = []
 
     @staticmethod
@@ -34,6 +57,12 @@ class BrowserAuthEngine:
             os.chmod(path, 0o600)
         except OSError:
             pass
+
+    def cleanup(self) -> None:
+        """Remove ephemeral browser-auth state created for this process."""
+        path = getattr(self, "_ephemeral_dir", "")
+        if path and os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
 
     async def _install_scope_routing(self, context) -> None:
         async def _route(route, request):
@@ -77,7 +106,20 @@ class BrowserAuthEngine:
             daemon=True,
         )
         thread.start()
-        thread.join()
+        thread.join(timeout=self.auth_timeout_seconds)
+        if thread.is_alive():
+            return {
+                "success": False,
+                "http_handoff_usable": False,
+                "session_origin": "browser_auth_timeout",
+                "evidence": {
+                    "reason": "auth_timeout",
+                    "timeout_seconds": self.auth_timeout_seconds,
+                },
+                "limitations": [
+                    "Browser authentication exceeded its configured wall-clock timeout."
+                ],
+            }
         if error:
             raise error["exc"]
         return result
@@ -125,13 +167,16 @@ class BrowserAuthEngine:
         slow_mo = int(browser_cfg.get("slow_mo", 0) or 0)
 
         screenshot_paths: List[str] = []
-        trace_path = os.path.join(
-            self.artifacts_dir,
-            f"{actor.actor_id}-trace.zip",
+        trace_path = (
+            os.path.join(self.artifacts_dir, f"{actor.actor_id}-trace.zip")
+            if self.capture_auth_trace
+            else ""
+        )
+        storage_root = (
+            self.artifacts_dir if self.retain_storage_state else self._ephemeral_dir
         )
         storage_state_path = os.path.join(
-            self.artifacts_dir,
-            f"{actor.actor_id}-storage.json",
+            storage_root, f"{actor.actor_id}-storage.json"
         )
         visited_urls: List[str] = []
         response_chain: List[Dict[str, Any]] = []
@@ -149,7 +194,8 @@ class BrowserAuthEngine:
                 service_workers="block",
             )
             await self._install_scope_routing(context)
-            await context.tracing.start(screenshots=True, snapshots=True)
+            if self.capture_auth_trace:
+                await context.tracing.start(screenshots=True, snapshots=True)
             page = await context.new_page()
 
             page.on(
@@ -204,12 +250,10 @@ class BrowserAuthEngine:
                     visited_urls.append(page.url)
 
                 matched_success_indicator = await self._matched_indicator(
-                    page,
-                    flow.success_indicators,
+                    page, flow.success_indicators
                 )
                 matched_failure_indicator = await self._matched_indicator(
-                    page,
-                    flow.failure_indicators,
+                    page, flow.failure_indicators
                 )
 
                 verify_response = None
@@ -323,7 +367,7 @@ class BrowserAuthEngine:
                 )
                 if not http_handoff_usable:
                     limitations.append(
-                        "Browser login produced a storage state, but no reusable "
+                        "Browser login produced browser-only state, but no reusable "
                         "cookies or bearer token could be handed off to the HTTP layer."
                     )
 
@@ -336,7 +380,10 @@ class BrowserAuthEngine:
                     "matched_success_indicator": matched_success_indicator,
                     "matched_failure_indicator": matched_failure_indicator,
                     "cookie_names": sorted(material.cookies.keys()),
-                    "storage_state_path": storage_state_path,
+                    "storage_state_retained": self.retain_storage_state,
+                    "storage_state_path": (
+                        storage_state_path if self.retain_storage_state else "ephemeral"
+                    ),
                     "browser_storage_keys": flow.browser_storage_keys,
                     "storage_values": {
                         key: list(value.keys())
@@ -346,7 +393,7 @@ class BrowserAuthEngine:
                     "usable_state": usable_state,
                     "http_handoff_usable": http_handoff_usable,
                     "screenshots": screenshot_paths,
-                    "trace": trace_path,
+                    "trace": trace_path if self.capture_auth_trace else "",
                     "blocked_requests": self.blocked_requests[-50:],
                 }
                 if self.event_bus is not None:
@@ -374,30 +421,42 @@ class BrowserAuthEngine:
                 }
             finally:
                 try:
-                    await context.tracing.stop(path=trace_path)
-                    self._secure_file(trace_path)
+                    if self.capture_auth_trace and trace_path:
+                        await context.tracing.stop(path=trace_path)
+                        self._secure_file(trace_path)
                 finally:
                     if self.artifact_store is not None:
-                        if os.path.exists(trace_path):
+                        if self.capture_auth_trace and os.path.exists(trace_path):
                             self.artifact_store.register_file(
                                 "trace",
                                 trace_path,
                                 actor_id=actor.actor_id,
-                                description="Browser login trace",
+                                description=(
+                                    "Sensitive browser login trace (explicitly enabled)"
+                                ),
+                                metadata={"sensitive": True},
                             )
                         for screenshot_path in screenshot_paths:
                             self.artifact_store.register_file(
                                 "screenshot",
                                 screenshot_path,
                                 actor_id=actor.actor_id,
-                                description="Browser login screenshot",
+                                description=(
+                                    "Sensitive browser login screenshot (explicitly enabled)"
+                                ),
+                                metadata={"sensitive": True},
                             )
-                        if os.path.exists(storage_state_path):
+                        if self.retain_storage_state and os.path.exists(
+                            storage_state_path
+                        ):
                             self.artifact_store.register_file(
                                 "storage_state",
                                 storage_state_path,
                                 actor_id=actor.actor_id,
-                                description="Browser login storage state",
+                                description=(
+                                    "Sensitive browser login storage state (explicitly retained)"
+                                ),
+                                metadata={"sensitive": True},
                             )
                     await context.close()
                     await browser.close()
@@ -422,6 +481,8 @@ class BrowserAuthEngine:
         label: str,
         bucket: List[str],
     ) -> None:
+        if not self.capture_auth_screenshots:
+            return
         safe_host = urlparse(page.url).netloc.replace(":", "-") or "page"
         path = os.path.join(
             self.artifacts_dir,
