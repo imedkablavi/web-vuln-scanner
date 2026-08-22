@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from .insertion_points import json_document_from_inputs, mutate_json_inputs
 from .utils import logger
 
 
@@ -48,14 +49,15 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
 
     payload = getattr(testcase, "payload", "")
     name = str(getattr(testcase, "param", "") or "")
+    input_path = str(getattr(testcase, "input_path", "") or "")
 
     # Third-party/fixture request adapters written against the older scanner
-    # contract may only expose send_surface(). Preserve query/body behavior for
-    # those adapters, while requiring the real RequestManager contract for
-    # header, cookie, path, method-override, and redirect-aware test cases.
+    # contract may only expose send_surface(). Preserve flat query/body behavior
+    # for those adapters. Canonical nested paths require RequestManager.
     if not hasattr(requester, "send_as_actor"):
         legacy_supported = (
             kind in {"query", "body"}
+            and not input_path.startswith("/")
             and not getattr(testcase, "method_override", None)
             and getattr(testcase, "allow_redirects", None) is None
             and hasattr(requester, "send_surface")
@@ -71,13 +73,14 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
     requester_config = getattr(requester, "config", {}) or {}
     headers = dict(requester_config.get("auth", {}).get("headers", {}) or {})
     cookies = dict(getattr(requester, "cookies", {}) or {})
-    has_body_inputs = False
+    body_inputs = []
 
     for field in getattr(surface, "inputs", []) or []:
         field_kind = str(field.kind or "").lower()
         if field_kind == "body":
-            has_body_inputs = True
-            data[field.name] = field.value if field.value is not None else ""
+            body_inputs.append(field)
+            if not str(getattr(field, "path", "") or "").startswith("/"):
+                data[field.name] = field.value if field.value is not None else ""
         elif field_kind == "query":
             params[field.name] = field.value if field.value is not None else ""
         elif field_kind == "header":
@@ -88,9 +91,6 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
     target_url = surface.url
     if kind == "query":
         params[name] = payload
-    elif kind == "body":
-        data[name] = payload
-        has_body_inputs = True
     elif kind == "header":
         headers[name] = payload
     elif kind == "cookie":
@@ -100,7 +100,7 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
 
     override = str(getattr(testcase, "method_override", "") or "").upper()
     method = override or str(surface.method or "GET").upper()
-    if not override and has_body_inputs and method == "GET":
+    if not override and body_inputs and method == "GET":
         method = "POST"
     if method not in _SUPPORTED_METHODS:
         raise ValueError(f"Unsupported plugin HTTP method: {method}")
@@ -108,15 +108,32 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
     content_type = str(
         (getattr(surface, "meta", {}) or {}).get("content_type", "")
     ).lower()
-    json_payload = data if content_type.startswith("application/json") else None
-    form_payload = None if json_payload is not None else data
+    is_json = content_type.startswith("application/json") or "+json" in content_type
+
+    json_payload = None
+    form_payload = None
+    if is_json:
+        if kind == "body":
+            json_payload = mutate_json_inputs(
+                body_inputs,
+                name=name,
+                path=input_path,
+                payload=payload,
+            )
+        elif body_inputs:
+            json_payload = json_document_from_inputs(body_inputs)
+    else:
+        if kind == "body":
+            data[name] = payload
+        form_payload = data or None
 
     logger.debug(
-        "Plugin request %s %s input=%s:%s",
+        "Plugin request %s %s input=%s:%s path=%s",
         method,
         target_url,
         kind,
         name,
+        input_path,
     )
     return requester.send_as_actor(
         method,
