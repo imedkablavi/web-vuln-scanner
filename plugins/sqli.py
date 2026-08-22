@@ -36,6 +36,16 @@ class SQLiPlugin(BasePlugin):
     def _excerpt(self, text: str, limit: int = 160) -> str:
         return re.sub(r"\s+", " ", text or "").strip()[:limit]
 
+    @staticmethod
+    def _active_input_supported(surface: AttackSurface, item) -> bool:
+        if item.kind != "body":
+            return True
+        path = str(getattr(item, "path", "") or "")
+        nested_json = path.startswith("/") and path.count("/") > 1
+        if nested_json and not bool((surface.meta or {}).get("nested_active_supported", False)):
+            return False
+        return True
+
     def generate_tests(self, surface: AttackSurface, context: Dict) -> List[TestCase]:
         tests: List[TestCase] = []
         max_tests = self.max_tests_per_surface(self.config)
@@ -49,6 +59,7 @@ class SQLiPlugin(BasePlugin):
             )
             for inp in surface.inputs
             if inp.kind in self.supported_input_kinds
+            and self._active_input_supported(surface, inp)
         )
         deduped = []
         seen = set()
