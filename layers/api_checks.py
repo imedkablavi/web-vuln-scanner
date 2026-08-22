@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Tuple
 
 from core.models import Finding
 from layers.auth_token_checks import AuthTokenPostureScanner
+from layers.xml_checks import XMLParserProbeScanner
 
 
 class APIPostureScanner:
@@ -13,6 +14,7 @@ class APIPostureScanner:
         self.enabled = bool(self.layer_config.get("enabled", True))
         self.skipped: List[str] = []
         self.auth_token_meta: Dict[str, Any] = {}
+        self.xml_probe_meta: Dict[str, Any] = {}
 
     def scan(self, api_engine) -> Tuple[List[Finding], Dict[str, Any]]:
         findings: List[Finding] = []
@@ -27,6 +29,11 @@ class APIPostureScanner:
         token_findings, self.auth_token_meta = token_scanner.scan(auth_manager)
         findings.extend(token_findings)
         self.skipped.extend(self.auth_token_meta.get("skipped", []))
+
+        xml_scanner = XMLParserProbeScanner(requester, self.config)
+        xml_findings, self.xml_probe_meta = xml_scanner.scan(api_engine)
+        findings.extend(xml_findings)
+        self.skipped.extend(self.xml_probe_meta.get("skipped", []))
         return findings, self._meta(api_engine)
 
     def _scan_api_inventory(self, api_engine) -> List[Finding]:
@@ -152,6 +159,7 @@ class APIPostureScanner:
             "swagger_inventory": getattr(api_engine, "swagger_inventory", None),
             "graphql_inventory": getattr(api_engine, "graphql_inventory", None),
             "auth_token_posture": self.auth_token_meta,
+            "xml_probe": self.xml_probe_meta,
             "errors": getattr(api_engine, "errors", []),
             "skipped": self.skipped,
         }
