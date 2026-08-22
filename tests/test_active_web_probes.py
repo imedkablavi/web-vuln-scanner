@@ -5,6 +5,14 @@ from dataclasses import dataclass, field
 from layers.active_web_probes import ActiveWebProbeScanner
 
 
+REFERENCE_BODY = (
+    "<html><body><h1>Reference application page</h1>"
+    "<p>This body is intentionally long enough for similarity comparison. "
+    "It represents content fetched directly from the authorized same origin.</p>"
+    "</body></html>"
+)
+
+
 @dataclass
 class Response:
     status_code: int = 200
@@ -24,7 +32,13 @@ class Requester:
             return Response(text=f"X-WVS-Trace-Canary: {token}", url=url)
 
         params = kwargs.get("params") or []
-        value = dict(params).get("q", "")
+        values = dict(params)
+        if url == "https://example.test/" and not values:
+            return Response(text=REFERENCE_BODY, url=url)
+
+        value = values.get("q", values.get("url", ""))
+        if value == "https://example.test/" and "url" in values:
+            return Response(text=REFERENCE_BODY, url=url)
         if "X-WVS-Canary" in value:
             token = value.rsplit(": ", 1)[-1]
             return Response(headers={"X-WVS-Canary": token}, url=url)
@@ -41,10 +55,12 @@ def config(*, max_requests=50):
             "web": {
                 "enabled": True,
                 "max_urls": 3,
+                "max_params_per_url": 3,
                 "max_requests": max_requests,
                 "ssti": True,
                 "crlf": True,
                 "trace": True,
+                "ssrf_same_origin": True,
             }
         }
     }
@@ -69,10 +85,39 @@ def test_active_web_probes_confirm_ssti_crlf_and_trace():
     assert meta["requests_sent"] >= 4
     assert meta["max_requests"] == 50
 
-    ssti = next(finding for finding in findings if finding.type == "Server-Side Template Injection")
+    ssti = next(
+        finding
+        for finding in findings
+        if finding.type == "Server-Side Template Injection"
+    )
     assert ssti.verification_status == "verified"
     assert ssti.confidence == "HIGH"
     assert ssti.reproducible is True
+
+
+def test_same_origin_ssrf_behavior_probe_stays_in_scope():
+    requester = Requester()
+    scanner = ActiveWebProbeScanner(requester, config())
+    findings, meta = scanner.scan(
+        [
+            {
+                "url": "https://example.test/fetch?url=https%3A%2F%2Fexample.test%2Fold",
+                "text": "normal fetch endpoint response that differs from the site root",
+            }
+        ]
+    )
+
+    ssrf = next(
+        finding
+        for finding in findings
+        if finding.type == "Server-Side URL Fetch Behavior"
+    )
+    assert ssrf.verification_status == "detected"
+    assert ssrf.confidence == "MEDIUM"
+    assert ssrf.evidence["probe_target"] == "same-origin-root"
+    assert all("example.test" in call[1] for call in requester.calls)
+    assert not any("169.254" in str(call) or "127.0.0.1" in str(call) for call in requester.calls)
+    assert meta["checks"]["ssrf_same_origin"] is True
 
 
 def test_trace_runs_once_per_origin():
@@ -110,7 +155,9 @@ def test_request_budget_is_a_hard_cap():
 def test_active_web_probes_skip_parameter_checks_without_query_string():
     requester = Requester()
     scanner = ActiveWebProbeScanner(requester, config())
-    findings, meta = scanner.scan([{"url": "https://example.test/", "text": "baseline"}])
+    findings, meta = scanner.scan(
+        [{"url": "https://example.test/", "text": "baseline"}]
+    )
 
     assert [finding.type for finding in findings] == ["HTTP TRACE Enabled"]
     assert meta["checked_urls"] == 1
@@ -119,7 +166,9 @@ def test_active_web_probes_skip_parameter_checks_without_query_string():
 def test_active_web_probes_are_off_by_default():
     requester = Requester()
     scanner = ActiveWebProbeScanner(requester, {})
-    findings, meta = scanner.scan([{"url": "https://example.test/search?q=base", "text": "baseline"}])
+    findings, meta = scanner.scan(
+        [{"url": "https://example.test/search?q=base", "text": "baseline"}]
+    )
 
     assert findings == []
     assert meta["enabled"] is False
