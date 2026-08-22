@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import urlparse
 
+from .deadline import ScanDeadline
+
 
 _HTTP_SCHEMES = {"http", "https"}
 
@@ -22,7 +24,9 @@ class ScopePolicy:
     The policy validates URL syntax, domain allowlists, excluded paths and
     literal/resolved IP addresses. Private, loopback, link-local, multicast,
     unspecified and reserved addresses are denied unless ``scope.allow_private``
-    is explicitly enabled.
+    is explicitly enabled. It also observes the process-wide scan deadline so
+    discovery/browser/request layers stop creating new outbound work after the
+    configured wall-clock budget expires.
     """
 
     def __init__(self, config: dict):
@@ -41,6 +45,7 @@ class ScopePolicy:
         self.max_url_length = int(
             config.get("crawler", {}).get("max_url_length", 2048)
         )
+        self.deadline = ScanDeadline.from_config(config)
 
         target = str(config.get("target", "") or "")
         target_parsed = urlparse(target)
@@ -116,7 +121,10 @@ class ScopePolicy:
 
             if host == pattern_host:
                 return True
-            if pattern_port is not None and netloc == raw_pattern.lower().rstrip("."):
+            if (
+                pattern_port is not None
+                and netloc == raw_pattern.lower().rstrip(".")
+            ):
                 return True
         return False
 
@@ -139,6 +147,8 @@ class ScopePolicy:
     def evaluate(
         self, url: str, *, resolve_dns: bool | None = None
     ) -> ScopeDecision:
+        if self.deadline.expired():
+            return ScopeDecision(False, "global scan deadline exceeded")
         if not isinstance(url, str) or not url:
             return ScopeDecision(False, "empty URL")
         if len(url) > self.max_url_length:
@@ -168,7 +178,9 @@ class ScopePolicy:
                 False, f"sensitive IP address {host} is not allowed"
             )
 
-        should_resolve = self.resolve_dns if resolve_dns is None else bool(resolve_dns)
+        should_resolve = (
+            self.resolve_dns if resolve_dns is None else bool(resolve_dns)
+        )
         if should_resolve and not self.allow_private and not self._is_sensitive_ip(host):
             try:
                 resolved = list(self._resolved_addresses(host))
@@ -196,4 +208,6 @@ class ScopePolicy:
     def require(self, url: str, *, resolve_dns: bool | None = None) -> None:
         decision = self.evaluate(url, resolve_dns=resolve_dns)
         if not decision.allowed:
+            if decision.reason == "global scan deadline exceeded":
+                raise TimeoutError("Global scan deadline exceeded")
             raise RuntimeError(f"URL blocked by scope policy: {decision.reason}")
