@@ -156,6 +156,7 @@ class ScannerEngine:
 
         debug_counts = {
             "surfaces_total": len(surfaces),
+            "inventory_only_surfaces": 0,
             "plugins_total": len(self.plugins),
             "details": {},
             "baseline_example": None,
@@ -219,6 +220,10 @@ class ScannerEngine:
 
         def run_surface(surface: AttackSurface):
             if deadline_exceeded():
+                return []
+            if (getattr(surface, "meta", {}) or {}).get("active_eligible") is False:
+                with stats_lock:
+                    debug_counts["inventory_only_surfaces"] += 1
                 return []
             local_findings = []
             baseline = get_baseline(surface)
@@ -459,6 +464,7 @@ class ScannerEngine:
             )
         self.last_run_stats = {
             "surfaces_total": len(surfaces),
+            "inventory_only_surfaces": debug_counts["inventory_only_surfaces"],
             "plugins_loaded": [plugin.name for plugin in self.plugins],
             "findings_total": len(all_findings),
             "findings_per_plugin": dict(plugin_finding_counts),
@@ -482,6 +488,7 @@ class ScannerEngine:
             logger.info(
                 "Debug counters summary: "
                 f"surfaces={debug_counts['surfaces_total']} "
+                f"inventory_only={debug_counts['inventory_only_surfaces']} "
                 f"plugins={debug_counts['plugins_total']} "
                 f"findings={debug_counts['findings_total']} "
                 f"suppressed={debug_counts['suppressed_testcases']} "
