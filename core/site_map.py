@@ -12,10 +12,10 @@ from .utils import normalize_url
 
 
 class SiteMapBuilder:
-    """Build a secret-minimized application map from crawler observations.
+    """Build a secret-minimized application map from assessment observations.
 
     URLs are stored without query values/fragments. Input names and locations are
-    retained because they describe attack surface coverage without persisting the
+    retained because they describe attack-surface coverage without persisting the
     original parameter values.
     """
 
@@ -117,6 +117,57 @@ class SiteMapBuilder:
             inputs=inputs,
             surface_id=surface.id,
         )
+
+    def merge_report(self, report: Dict[str, Any] | None) -> None:
+        """Merge another serialized site map without reintroducing raw values."""
+        if not isinstance(report, dict):
+            return
+        self.truncated = bool(self.truncated or report.get("summary", {}).get("truncated"))
+        for entry in report.get("entries", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get("url", "") or "")
+            methods = [str(item) for item in (entry.get("methods", []) or ["GET"])]
+            sources = [str(item) for item in (entry.get("sources", []) or ["unknown"])]
+            actors = [str(item) for item in (entry.get("actors", []) or []) if str(item)]
+            raw_inputs = entry.get("input_points", []) or []
+            inputs = [
+                InputField(
+                    name=str(item.get("name", "") or ""),
+                    value=None,
+                    kind=str(item.get("kind", "query") or "query"),
+                )
+                for item in raw_inputs
+                if isinstance(item, dict) and str(item.get("name", "") or "").strip()
+            ]
+            surface_ids = [
+                str(item) for item in (entry.get("surface_ids", []) or []) if str(item)
+            ]
+            for source in sources:
+                for method in methods:
+                    if actors:
+                        for actor_id in actors:
+                            self.record_url(
+                                url,
+                                source=source,
+                                method=method,
+                                requested=bool(entry.get("requested", False)),
+                                depth=entry.get("min_depth"),
+                                actor_id=actor_id,
+                                inputs=inputs,
+                            )
+                    else:
+                        self.record_url(
+                            url,
+                            source=source,
+                            method=method,
+                            requested=bool(entry.get("requested", False)),
+                            depth=entry.get("min_depth"),
+                            inputs=inputs,
+                        )
+            base_url = self._base_url(url)
+            if base_url in self._entries:
+                self._entries[base_url]["surface_ids"].update(surface_ids)
 
     def to_dict(self) -> Dict[str, Any]:
         serialized = []
