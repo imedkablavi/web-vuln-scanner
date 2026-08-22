@@ -11,10 +11,8 @@ PLUGIN_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_enabled": False,
         "cwe": ["CWE-89"],
         "owasp": ["A05:2025-Injection"],
-        "notes": (
-            "Bounded SQL injection checks. Active testing is opt-in through an "
-            "authorized scan profile; time-based probes remain disabled by default."
-        ),
+        "wstg": ["WSTG-INPV-05"],
+        "notes": "Bounded SQL injection checks using error and differential response evidence. Timing probes stay disabled in release profiles.",
     },
     "business_logic": {
         "maturity": "stable",
@@ -22,21 +20,17 @@ PLUGIN_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_enabled": False,
         "cwe": ["CWE-639", "CWE-862"],
         "owasp": ["A01:2025-Broken Access Control"],
-        "notes": (
-            "Actor-aware IDOR and access-control verification where configured. "
-            "Active testing is opt-in."
-        ),
+        "wstg": ["WSTG-ATHZ-04"],
+        "notes": "Actor-aware object access and RBAC verification when test identities and policy data are configured.",
     },
     "xss_reflected": {
-        "maturity": "experimental",
+        "maturity": "stable",
         "activity": "active",
         "default_enabled": False,
         "cwe": ["CWE-79"],
         "owasp": ["A05:2025-Injection"],
-        "notes": (
-            "Experimental reflected-input detector; disabled until browser/context "
-            "verification quality is hardened."
-        ),
+        "wstg": ["WSTG-INPV-01"],
+        "notes": "Injects an inert custom HTML element and reports only when the response parser reconstructs that element. It does not claim JavaScript execution.",
     },
     "lfi": {
         "maturity": "experimental",
@@ -44,9 +38,8 @@ PLUGIN_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_enabled": False,
         "cwe": ["CWE-22", "CWE-98"],
         "owasp": ["A01:2025-Broken Access Control"],
-        "notes": (
-            "Experimental local-file/path traversal checks; disabled by the registry."
-        ),
+        "wstg": ["WSTG-ATHZ-01", "WSTG-INPV-11"],
+        "notes": "Path traversal/file inclusion verifier still needs stronger platform-specific fixtures before release use.",
     },
     "cmd_injection": {
         "maturity": "experimental",
@@ -54,17 +47,17 @@ PLUGIN_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_enabled": False,
         "cwe": ["CWE-78"],
         "owasp": ["A05:2025-Injection"],
-        "notes": (
-            "Experimental command-injection marker checks; disabled by the registry."
-        ),
+        "wstg": ["WSTG-INPV-12"],
+        "notes": "Command injection remains experimental until execution proof can be separated reliably from ordinary reflection.",
     },
     "open_redirect": {
-        "maturity": "experimental",
+        "maturity": "stable",
         "activity": "active",
         "default_enabled": False,
         "cwe": ["CWE-601"],
         "owasp": [],
-        "notes": "Experimental redirect verification; disabled by the registry.",
+        "wstg": [],
+        "notes": "Tests common redirect parameters with a reserved .invalid destination and requires an exact redirect Location match.",
     },
 }
 
