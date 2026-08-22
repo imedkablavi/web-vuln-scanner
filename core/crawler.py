@@ -1,6 +1,7 @@
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qs
 
+from .har_import import load_har_seed_file
 from .js_discovery import JavaScriptEndpointDiscoverer
 from .models import AttackSurface, InputField
 from .scope import ScopePolicy
@@ -25,6 +26,72 @@ class Crawler:
         self.pages_visited = []
         self.js_endpoints = []
         self.js_discovery = JavaScriptEndpointDiscoverer(request_manager, config)
+        self.har_seed_urls = []
+        self.har_seed_report = {
+            "files": [],
+            "entries_seen": 0,
+            "surfaces": 0,
+            "active_eligible": 0,
+            "replayed_requests": 0,
+            "errors": [],
+        }
+        self._har_seeds_processed = False
+        self._load_har_seeds(crawler_cfg)
+
+    def _load_har_seeds(self, crawler_cfg):
+        cfg = crawler_cfg.get("har_seed", {}) or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return
+        files = cfg.get("files", []) or []
+        max_entries = int(cfg.get("max_entries", 5000) or 5000)
+        active_tests = bool(cfg.get("active_tests", False))
+
+        for path in files:
+            path_text = str(path or "").strip()
+            if not path_text:
+                continue
+            try:
+                surfaces, report = load_har_seed_file(
+                    path_text,
+                    scope=self.scope_policy,
+                    max_entries=max_entries,
+                    active_tests=active_tests,
+                )
+            except Exception as exc:
+                error = {"file": path_text, "error": str(exc)}
+                self.har_seed_report["errors"].append(error)
+                self.errors.append({"kind": "har_seed", **error})
+                continue
+
+            self.har_seed_report["files"].append(
+                {
+                    "path": path_text,
+                    "entries_seen": report.get("entries_seen", 0),
+                    "surfaces": report.get("surfaces", 0),
+                    "active_eligible": report.get("active_eligible", 0),
+                    "skipped": report.get("skipped", {}),
+                    "truncated": report.get("truncated", False),
+                }
+            )
+            self.har_seed_report["entries_seen"] += report.get("entries_seen", 0)
+            self.har_seed_report["surfaces"] += report.get("surfaces", 0)
+            self.har_seed_report["active_eligible"] += report.get("active_eligible", 0)
+
+            for surface in surfaces:
+                if surface.url not in self.har_seed_urls:
+                    self.har_seed_urls.append(surface.url)
+                if not surface.meta.get("active_eligible", False):
+                    continue
+                fp = self._fingerprint(
+                    surface.method,
+                    surface.url,
+                    surface.params.keys(),
+                    [item.name for item in surface.inputs],
+                )
+                if fp in self.visited:
+                    continue
+                self.visited.add(fp)
+                self.surfaces.append(surface)
 
     def extract_csrf_token(self, soup):
         token_input = soup.find("input", {"name": ["csrf_token", "csrf", "_csrf", "authenticity_token"]})
@@ -96,6 +163,14 @@ class Crawler:
             )
 
     def crawl(self, start_url, depth=0, actor=None):
+        if depth == 0 and not self._har_seeds_processed:
+            self._har_seeds_processed = True
+            root_normalized = normalize_url(start_url)
+            for seed_url in list(self.har_seed_urls):
+                if normalize_url(seed_url) == root_normalized:
+                    continue
+                self.crawl(seed_url, depth=0, actor=actor)
+
         if depth > self.max_depth or len(self.visited) >= self.max_urls:
             return
         if not self._in_scope(start_url):
@@ -198,3 +273,6 @@ class Crawler:
 
     def get_javascript_report(self):
         return self.js_discovery.report()
+
+    def get_har_seed_report(self):
+        return self.har_seed_report
