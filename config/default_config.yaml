@@ -14,6 +14,16 @@ scanner:
     max_depth: 3
     max_urls: 2000
     max_url_length: 2048
+    discovery_files:
+      robots_txt: true
+      sitemap_xml: true
+      max_sitemap_urls: 500
+      max_sitemap_files: 10
+      max_file_bytes: 2097152
+    site_map:
+      enabled: true
+      output_file: "crawler_site_map.json"
+      max_entries: 5000
     javascript_discovery:
       enabled: true
       max_scripts: 10
