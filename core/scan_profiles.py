@@ -8,6 +8,8 @@ from typing import Any, Dict
 
 import yaml
 
+from .scan_strategies import STRATEGIES, apply_strategy
+
 
 _EXPERIMENTAL_DISABLED = {
     "lfi": {"enabled": False},
@@ -174,6 +176,15 @@ def apply_profile(config: Dict[str, Any], profile: str) -> Dict[str, Any]:
     scanner = result.setdefault("scanner", {})
     result["scanner"] = _deep_merge(scanner, PROFILES[profile])
     result["scanner"]["profile"] = profile
+
+    # Safety and coverage are intentionally orthogonal. The profile decides
+    # whether active/browser/auth features may run. The strategy only changes
+    # discovery breadth and passive coverage budgets.
+    selected_strategy = str(
+        result["scanner"].get("strategy", "balanced") or "balanced"
+    ).strip().lower()
+    result = apply_strategy(result, selected_strategy)
+    result["scanner"]["profile"] = profile
     return result
 
 
@@ -193,8 +204,16 @@ def materialize_profile(
     config_path: str | Path,
     profile: str,
     output_path: str | Path,
+    strategy: str | None = None,
 ) -> Path:
     config = _read_source_config(config_path)
+    if strategy is not None:
+        selected = str(strategy).strip().lower()
+        if selected not in STRATEGIES:
+            raise ValueError(
+                f"Unknown scan strategy '{selected}'. Choose from: {', '.join(sorted(STRATEGIES))}"
+            )
+        config.setdefault("scanner", {})["strategy"] = selected
     rendered = apply_profile(config, profile)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -207,13 +226,21 @@ def materialize_profile(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Write one of the built-in scanner profiles to a YAML file."
+        description="Write one built-in safety profile plus discovery strategy to YAML."
     )
     parser.add_argument("profile", choices=sorted(PROFILES))
+    parser.add_argument("--strategy", choices=sorted(STRATEGIES), default=None)
     parser.add_argument("--config", default="config/default_config.yaml")
     parser.add_argument("--output", "-o", default="config/generated_profile.yaml")
     args = parser.parse_args()
-    print(materialize_profile(args.config, args.profile, args.output))
+    print(
+        materialize_profile(
+            args.config,
+            args.profile,
+            args.output,
+            strategy=args.strategy,
+        )
+    )
 
 
 if __name__ == "__main__":
