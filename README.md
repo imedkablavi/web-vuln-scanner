@@ -10,12 +10,14 @@ The default profile is passive. Active payloads are not sent unless an active pr
 
 The scanner currently covers four areas:
 
-- discovery: HTTP crawling, bounded static JavaScript endpoint extraction, optional Playwright crawling, OpenAPI/Swagger, GraphQL, technology fingerprinting, DNS and TLS inventory;
+- discovery: HTTP crawling, bounded static JavaScript endpoint extraction, optional HAR discovery seeding, optional Playwright crawling, OpenAPI/Swagger, GraphQL, technology fingerprinting, DNS and TLS inventory;
 - passive web checks: security headers, CSP posture, cookie flags, cache policy, CORS, redirects, multi-runtime stack traces, verbose server errors, JWT posture, and observed data exposure;
-- bounded active checks: SQL injection, reflected markup injection, open redirect, server-side template injection, CRLF/response-header injection, TRACE reflection, and same-origin URL-fetch behavior;
+- bounded active checks: SQL injection, reflected markup injection, open redirect, server-side template injection, CRLF/response-header injection, TRACE reflection, same-origin URL-fetch behavior, and conservative same-origin GET/HEAD YAML templates;
 - authorization testing: actor-aware object access checks, RBAC policy verification, authenticated crawling, replay, and workflow scenarios.
 
 `full-authorized` can additionally confirm a subset of reflected XSS candidates in Chromium using an inert DOM marker. Experimental LFI/path traversal and command-injection code remains disabled by the release maturity policy.
+
+The project also supports resumable active-test checkpoints and sanitized HAR-assisted discovery. Neither feature stores or replays captured authentication material by default.
 
 ## Install
 
@@ -56,6 +58,7 @@ The main installed command is `web-vuln-scanner`.
 
 ```bash
 web-vuln-scanner --help
+web-vuln-scanner scan --help
 ```
 
 A normal passive scan:
@@ -92,6 +95,42 @@ web-vuln-har --help
 
 `checks` lists available checks with maturity, activity level, and useful CWE/WSTG mappings. `doctor` verifies the installed runtime and packaged configuration before a scan.
 
+### Resume a long scan
+
+Start an active scan with a minimal checkpoint ledger:
+
+```bash
+web-vuln-scanner scan https://staging.example \
+  --profile safe-active \
+  --checkpoint .scanner-state/staging.json
+```
+
+Resume only after a partial/interrupted run:
+
+```bash
+web-vuln-scanner scan https://staging.example \
+  --profile safe-active \
+  --resume .scanner-state/staging.json
+```
+
+`--checkpoint` and `--resume` are mutually exclusive. A testcase is recorded only after its request and verification step complete successfully. Failed or interrupted testcases remain eligible for retry.
+
+Checkpoint files contain completed-test fingerprints plus redacted findings. They do not persist cookies, Authorization headers, response bodies, or raw parameter values. Resume is rejected when the target, profile, or relevant active-test configuration does not match. Completed checkpoint files are removed by default to prevent stale reuse.
+
+### Seed discovery from a HAR
+
+A browser/proxy HAR can feed normal scanner discovery directly:
+
+```bash
+web-vuln-scanner scan https://staging.example \
+  --profile passive \
+  --har-seed artifacts/session.har
+```
+
+This is **not** request replay. The scanner parses the HAR locally, rejects out-of-scope entries, discards captured values and credential headers, and uses only same-scope GET/HEAD URLs as fresh discovery seeds. Captured POST/PUT/PATCH/DELETE requests are not dispatched because they appeared in the HAR.
+
+HAR-derived active parameter surfaces stay off unless `scanner.crawler.har_seed.active_tests` is explicitly enabled in YAML.
+
 ## Profiles
 
 ### passive
@@ -100,7 +139,7 @@ web-vuln-har --help
 web-vuln-scanner scan https://target.example --profile passive
 ```
 
-This is the default. It crawls and inventories the application, then runs passive posture checks. It does not send SQLi, XSS, redirect, SSTI, CRLF, SSRF-style, or other active payloads.
+This is the default. It crawls and inventories the application, then runs passive posture checks. It does not send SQLi, XSS, redirect, SSTI, CRLF, SSRF-style, safe-template, or other active payloads.
 
 ### safe-active
 
@@ -118,11 +157,14 @@ Enabled checks include:
 - SSTI using two arithmetic canaries rather than command execution;
 - CRLF/response-header injection using a dedicated response-header canary;
 - TRACE reflection;
-- same-origin URL-fetch behavior on observed URL-like parameters.
+- same-origin URL-fetch behavior on observed URL-like parameters;
+- bounded safe YAML exposure checks using same-origin GET/HEAD requests only.
 
 The same-origin URL-fetch check never targets cloud metadata services, private address ranges, or external callback infrastructure. It reports fetch-like behavior rather than claiming internal-network SSRF.
 
 The scanner does not use time-based SQLi payloads in release profiles.
+
+Safe-template defaults are limited to 10 templates and 10 requests in this profile.
 
 ### full-authorized
 
@@ -132,7 +174,7 @@ web-vuln-scanner scan https://target.example \
   --config config/default_config.yaml
 ```
 
-This profile keeps the stable active checks and also enables browser-assisted discovery. Auth actors, RBAC verification, and workflows are available when configured.
+This profile keeps the stable active checks and also enables browser-assisted discovery. Auth actors, RBAC verification, and workflows are available when configured. The safe-template budget increases to 25 templates/requests.
 
 Browser XSS confirmation is bounded to a small set of GET/query candidates. Chromium must execute an inert handler that only sets a DOM marker before the condition can be marked `verified`.
 
@@ -171,6 +213,19 @@ Sends a TRACE request with a unique header and reports when the server reflects 
 ### Same-origin URL fetch
 
 Tests URL-like observed query parameters using a reference URL on the already-authorized origin. The check is designed to identify server-side fetch behavior without contacting private networks or callback infrastructure. A positive result is not treated as proof of internal-network reachability.
+
+### Safe YAML templates
+
+The safe-template engine is an intentionally constrained extension mechanism for deterministic exposure/misconfiguration checks. Packaged templates currently look for strong markers associated with:
+
+- PHP `phpinfo()` exposure;
+- Apache `server-status` exposure;
+- Nginx `stub_status` exposure;
+- Go `/debug/vars` expvar exposure.
+
+The engine accepts only GET/HEAD requests to one same-origin path and status/word/header matchers. It does **not** support raw HTTP, external origins, redirects, DSL/eval, shell commands, callbacks, file reads, template variables, or state-changing HTTP methods. Body inspection and request/template counts are bounded.
+
+A safe-template match is reported as `detected`: the declared response condition was observed, but a broader exploit chain is not claimed.
 
 These checks correspond to OWASP WSTG areas including reflected XSS (`WSTG-INPV-01`), HTTP response splitting (`WSTG-INPV-15`), SSTI (`WSTG-INPV-18`), HTTP methods (`WSTG-CONF-06`), SSRF (`WSTG-INPV-19`), and SQL injection (`WSTG-INPV-05`). Coverage is not a claim of complete WSTG or OWASP Top 10 testing.
 
@@ -296,7 +351,7 @@ scanner:
 
 Suppressed test cases are counted in scan diagnostics. Invalid regex patterns fail config validation instead of silently changing behavior.
 
-## HAR import
+## HAR import and discovery seeding
 
 `web-vuln-har` converts a browser/proxy HAR into a sanitized attack-surface inventory without replaying requests:
 
@@ -308,7 +363,58 @@ web-vuln-har session.har \
 
 It preserves method, base URL, parameter names, selected non-secret header names, and content type. Query/body values and credential headers such as Authorization and Cookie are intentionally discarded.
 
-For an explicitly authorized loopback/private target, add `--allow-private`.
+The scan-integrated seed mode is configured separately:
+
+```yaml
+scanner:
+  crawler:
+    har_seed:
+      enabled: false
+      files: []
+      max_entries: 5000
+      active_tests: false
+```
+
+`--har-seed PATH` enables this discovery input for one CLI run without modifying the original user YAML. Relative configured paths are resolved relative to the config file.
+
+For an explicitly authorized loopback/private target with the standalone importer, add `--allow-private`.
+
+## Checkpoint configuration
+
+The CLI flags materialize a temporary runtime config, but the feature can also be configured in YAML:
+
+```yaml
+scanner:
+  checkpoint:
+    enabled: false
+    path: ""
+    resume: false
+    flush_every: 10
+    keep_completed: false
+```
+
+Use checkpoint files as resumable execution state, not as the canonical report. They are secret-minimized and best-effort permission hardened, but should still be handled as assessment artifacts.
+
+## Safe template configuration
+
+```yaml
+scanner:
+  active_checks:
+    templates:
+      enabled: false
+      include_builtin: true
+      directory: ""
+      files: []
+      max_templates: 10
+      max_requests: 10
+      max_body_bytes: 131072
+```
+
+`safe-active` overrides `enabled` to true with the 10/10 limits above. `full-authorized` raises the limits to 25/25. `passive` forces the engine off.
+
+Custom template paths can be absolute or relative to the user YAML file. Invalid templates are rejected rather than interpreted permissively.
+
+See [`docs/advanced-workflows.md`](docs/advanced-workflows.md) for a custom template example and recommended HAR/checkpoint CI patterns.
 
 ## Reports
 
@@ -342,7 +448,7 @@ web-vuln-diff reports/baseline/scan_report.json \
 
 `--fail-on-regression` also fails when an existing issue moves to a stronger severity or verification state.
 
-The reporter redacts common credential forms before persistence. CI also scans smoke-test artifacts for known secret sentinels. Reports, screenshots, traces, replay files, and browser state can still contain sensitive application data, so handle the output directory as assessment evidence.
+The reporter redacts common credential forms before persistence. CI also scans smoke-test artifacts for known secret sentinels. Reports, screenshots, traces, replay files, checkpoint files, and browser state can still contain sensitive application/assessment data, so handle the output and state directories accordingly.
 
 ## CI exit gates
 
@@ -366,25 +472,9 @@ Runtime failures and partial scans are never converted into success by these gat
 
 ## Configuration
 
-The default config is `config/default_config.yaml`. Active web probes are visible under:
+The default config is `config/default_config.yaml`. Active web probes, safe templates, HAR discovery seeding, attack policy, checkpoint behavior, auth actors, and scope are all visible there. `web-vuln-scanner validate-config` validates release-critical types and bounds before the scan starts.
 
-```yaml
-scanner:
-  active_checks:
-    web:
-      enabled: false
-      max_urls: 10
-      max_params_per_url: 3
-      max_requests: 50
-      ssti: true
-      crlf: true
-      trace: true
-      ssrf_same_origin: true
-```
-
-Profiles override `enabled` and request budgets as needed. XML internal-entity probing remains off in every built-in profile and requires explicit configuration because XML POST/PUT/PATCH routes may change application state.
-
-See [`docs/advanced-workflows.md`](docs/advanced-workflows.md) for baseline comparison, HAR sanitization, JavaScript discovery limits, attack-parameter suppression, and a recommended CI pattern.
+Profiles override active `enabled` flags and request budgets as needed. XML internal-entity probing remains off in every built-in profile and requires explicit configuration because XML POST/PUT/PATCH routes may change application state.
 
 ## Docker
 
@@ -405,11 +495,13 @@ python -m pip_audit -r requirements.txt
 python -m build
 ```
 
-The CI workflow also tests Python 3.10, 3.11, and 3.12, installs the built wheel in a clean virtual environment, exercises `web-vuln-diff` and sanitized HAR import, runs the local browser/auth/workflow smoke target, checks smoke artifacts for test secrets, converts the report to SARIF, and exercises the Docker runtime.
+The CI workflow also tests Python 3.10, 3.11, and 3.12, installs the built wheel in a clean virtual environment, verifies the packaged safe-template YAML files from that wheel, exercises `web-vuln-diff` and sanitized HAR import, runs the local browser/auth/workflow smoke target, checks smoke artifacts for test secrets, converts the report to SARIF, and exercises the Docker runtime.
 
 ## Adding a check
 
 Before promoting a new check to stable, add both positive and negative fixtures. A stable check should have a bounded request count, clear verification semantics, a useful remediation, and a reason it will not report ordinary reflection or response noise as a vulnerability.
+
+For declarative exposure checks, prefer the safe-template schema when GET/HEAD plus deterministic response matchers are sufficient. Do not extend the release engine with raw HTTP, shell execution, arbitrary DSL/eval, or external callback behavior.
 
 Keep destructive techniques, broad exploitation, and external callback behavior out of the default release profiles.
 
