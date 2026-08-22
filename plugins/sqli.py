@@ -39,12 +39,28 @@ class SQLiPlugin(BasePlugin):
     def generate_tests(self, surface: AttackSurface, context: Dict) -> List[TestCase]:
         tests: List[TestCase] = []
         max_tests = self.max_tests_per_surface(self.config)
-        # Keep a complete boolean pair even when max_tests_per_surface is small.
         payloads = ["'", "' AND '1'='2", "' OR '1'='1", "\""]
-        # Build target list with kind awareness
-        targets = [(name, "query") for name in surface.params.keys()]
-        targets.extend([(inp.name, inp.kind) for inp in surface.inputs if inp.kind in self.supported_input_kinds])
-        for param, kind in targets:
+        targets = [(name, "query", name) for name in surface.params.keys()]
+        targets.extend(
+            (
+                inp.name,
+                inp.kind,
+                str(getattr(inp, "path", "") or inp.name),
+            )
+            for inp in surface.inputs
+            if inp.kind in self.supported_input_kinds
+        )
+        deduped = []
+        seen = set()
+        for param, kind, input_path in targets:
+            key = (kind, input_path or param)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((param, kind, input_path))
+
+        for param, kind, input_path in deduped:
+            baseline_identity = input_path or param
             for p in payloads:
                 tc = TestCase(
                     plugin=self.name,
@@ -52,15 +68,21 @@ class SQLiPlugin(BasePlugin):
                     param=param,
                     kind=kind,
                     payload=p,
-                    baseline_key=f"{surface.id}:{param}",
+                    baseline_key=f"{surface.id}:{kind}:{baseline_identity}",
+                    input_path=input_path if input_path != param else "",
                 )
                 tests.append(tc)
-                # Add a repeated attempt for boolean payloads to stabilize noisy responses
                 if ("' AND '1'='2" in p or "' OR '1'='1" in p) and len(tests) + 1 < max_tests:
                     tests.append(tc)
                 if len(tests) >= max_tests:
                     return tests[:max_tests]
         return tests
+
+    def _target_evidence(self, testcase: TestCase) -> Dict:
+        return {
+            "param": testcase.param,
+            "insertion_path": testcase.input_path,
+        }
 
     def verify(self, testcase: TestCase, baseline, response, context: Dict) -> VerificationResult:
         if response is None or baseline is None:
@@ -80,46 +102,58 @@ class SQLiPlugin(BasePlugin):
         sim = difflib.SequenceMatcher(None, baseline["text"], body).ratio()
         length_delta_ratio = abs(len(body) - baseline["length"]) / max(1, baseline["length"])
 
-        # Error-based
         for pat in self.error_patterns:
             if re.search(pat, body, re.IGNORECASE):
-                return VerificationResult(
-                    True,
-                    "HIGH",
+                evidence = self._target_evidence(testcase)
+                evidence.update(
                     {
-                        "param": testcase.param,
                         "signal": "sql_error_pattern",
                         "pattern": pat,
                         "status": status,
                         "baseline_status": baseline.get("status"),
                         "length_delta_ratio": length_delta_ratio,
                         "response_excerpt": self._excerpt(body),
+                    }
+                )
+                return VerificationResult(
+                    True,
+                    "HIGH",
+                    evidence,
+                    {
+                        "param": testcase.param,
+                        "input_path": testcase.input_path,
+                        "payload": testcase.payload,
                     },
-                    {"param": testcase.param, "payload": testcase.payload},
                     severity="HIGH",
                     verification_status="detected",
                     rationale="A database-specific error pattern was observed in the response.",
                 )
 
         if status >= 500:
-            return VerificationResult(
-                True,
-                "LOW",
+            evidence = self._target_evidence(testcase)
+            evidence.update(
                 {
-                    "param": testcase.param,
                     "signal": "server_error_after_payload",
                     "status": status,
                     "baseline_status": baseline.get("status"),
                     "length_delta_ratio": length_delta_ratio,
                     "response_excerpt": self._excerpt(body),
+                }
+            )
+            return VerificationResult(
+                True,
+                "LOW",
+                evidence,
+                {
+                    "param": testcase.param,
+                    "input_path": testcase.input_path,
+                    "payload": testcase.payload,
                 },
-                {"param": testcase.param, "payload": testcase.payload},
                 severity="MEDIUM",
                 verification_status="suspected",
                 rationale="A payload-triggered 5xx can indicate SQLi, but it is not sufficient to confirm exploitability.",
             )
 
-        # Boolean-based: compare true vs false per baseline_key
         min_delta = float(self.config.get("min_length_delta_ratio", 0.15))
         cache = context.setdefault("boolean_cache", {})
         entry = cache.setdefault(testcase.baseline_key, {"false": [], "true": []})
@@ -139,7 +173,6 @@ class SQLiPlugin(BasePlugin):
 
         if is_true:
             entry["true"].append(current)
-            # Require at least one prior FALSE to compare against
             false_hits = entry.get("false", [])
             if not false_hits:
                 return VerificationResult(
@@ -149,9 +182,7 @@ class SQLiPlugin(BasePlugin):
                     {},
                     verification_status="not_reproducible",
                 )
-            # Use latest false sample
             ref = false_hits[-1]
-            # Require consistent divergence from baseline and false, with similarity to baseline low enough
             if (
                 resp_hash != base_hash
                 and ref["hash"] != resp_hash
@@ -159,11 +190,9 @@ class SQLiPlugin(BasePlugin):
                 and sim < 0.98
                 and abs(len(body) - ref["len"]) / max(1, ref["len"]) >= min_delta
             ):
-                return VerificationResult(
-                    True,
-                    "HIGH",
+                evidence = self._target_evidence(testcase)
+                evidence.update(
                     {
-                        "param": testcase.param,
                         "signal": "boolean_differential",
                         "hash_true": resp_hash,
                         "hash_false": ref["hash"],
@@ -172,20 +201,27 @@ class SQLiPlugin(BasePlugin):
                         "status_false": ref["status"],
                         "length_delta_ratio": length_delta_ratio,
                         "response_excerpt_true": self._excerpt(body),
+                    }
+                )
+                return VerificationResult(
+                    True,
+                    "HIGH",
+                    evidence,
+                    {
+                        "param": testcase.param,
+                        "input_path": testcase.input_path,
+                        "payload_true": testcase.payload,
+                        "payload_false": "' AND '1'='2",
                     },
-                    {"param": testcase.param, "payload_true": testcase.payload, "payload_false": "' AND '1'='2"},
                     severity="HIGH",
                     verification_status="verified",
                     rationale="Boolean true/false probes produced materially different responses against the same baseline.",
                 )
 
-        # Length/hash delta fallback for non-boolean probes.
         if not is_false and not is_true and status == baseline.get("status") and resp_hash != base_hash and length_delta_ratio >= min_delta:
-            return VerificationResult(
-                True,
-                "LOW",
+            evidence = self._target_evidence(testcase)
+            evidence.update(
                 {
-                    "param": testcase.param,
                     "signal": "response_delta",
                     "status": status,
                     "baseline_status": baseline.get("status"),
@@ -193,8 +229,17 @@ class SQLiPlugin(BasePlugin):
                     "baseline_hash": base_hash,
                     "candidate_hash": resp_hash,
                     "response_excerpt": self._excerpt(body),
+                }
+            )
+            return VerificationResult(
+                True,
+                "LOW",
+                evidence,
+                {
+                    "param": testcase.param,
+                    "input_path": testcase.input_path,
+                    "payload": testcase.payload,
                 },
-                {"param": testcase.param, "payload": testcase.payload},
                 severity="MEDIUM",
                 verification_status="suspected",
                 rationale="Response diffs alone are heuristic and can be caused by non-SQL application behavior.",
@@ -216,6 +261,7 @@ class SQLiPlugin(BasePlugin):
             remediation="Use parameterized queries/ORM bindings and validate inputs.",
             reproduction={
                 "param": testcase.param,
+                "input_path": testcase.input_path,
                 "payload": testcase.payload,
                 "kind": testcase.kind,
                 "method_override": testcase.method_override,
@@ -223,6 +269,11 @@ class SQLiPlugin(BasePlugin):
             verification_status=vres.verification_status,
             scanner_mode="active-web",
             reproducible=vres.verification_status == "verified",
-            target={"source": surface.source, "method": surface.method, "parameter": testcase.param},
+            target={
+                "source": surface.source,
+                "method": surface.method,
+                "parameter": testcase.param,
+                "insertion_path": testcase.input_path,
+            },
             notes=[vres.rationale] if vres.rationale else [],
         )
