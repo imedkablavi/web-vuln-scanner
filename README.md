@@ -1,6 +1,6 @@
 # Web Vulnerability Scanner
 
-A Python CLI for scoped web application security testing. It can crawl a target, inspect common security controls, run a small set of bounded active checks, compare authenticated users, and export findings as JSON, HTML, or SARIF.
+A Python CLI for scoped web application security testing. It can crawl a target, inventory modern web/API surfaces, inspect common security controls, run a bounded set of active checks, compare authenticated users, and export findings as JSON, HTML, or SARIF.
 
 The default profile is passive. Active payloads are not sent unless an active profile is selected.
 
@@ -10,12 +10,12 @@ The default profile is passive. Active payloads are not sent unless an active pr
 
 The scanner currently covers four areas:
 
-- discovery: HTTP crawling, optional Playwright crawling, OpenAPI/Swagger, GraphQL, DNS and TLS inventory;
-- passive web checks: security headers, cookie flags, CORS, redirects, verbose server errors, and observed data exposure;
-- bounded active checks: SQL injection, reflected markup injection, open redirect, server-side template injection, CRLF/response-header injection, and TRACE reflection;
+- discovery: HTTP crawling, bounded static JavaScript endpoint extraction, optional Playwright crawling, OpenAPI/Swagger, GraphQL, technology fingerprinting, DNS and TLS inventory;
+- passive web checks: security headers, CSP posture, cookie flags, cache policy, CORS, redirects, multi-runtime stack traces, verbose server errors, JWT posture, and observed data exposure;
+- bounded active checks: SQL injection, reflected markup injection, open redirect, server-side template injection, CRLF/response-header injection, TRACE reflection, and same-origin URL-fetch behavior;
 - authorization testing: actor-aware object access checks, RBAC policy verification, authenticated crawling, replay, and workflow scenarios.
 
-Experimental LFI/path traversal and command-injection code is kept disabled by the release maturity policy.
+`full-authorized` can additionally confirm a subset of reflected XSS candidates in Chromium using an inert DOM marker. Experimental LFI/path traversal and command-injection code remains disabled by the release maturity policy.
 
 ## Install
 
@@ -52,7 +52,7 @@ python -m pip install -e '.[dev]'
 
 ## CLI
 
-The installed command is `web-vuln-scanner`.
+The main installed command is `web-vuln-scanner`.
 
 ```bash
 web-vuln-scanner --help
@@ -70,16 +70,27 @@ The old short form still works:
 web-vuln-scanner https://target.example
 ```
 
-Useful CLI commands:
+Useful scanner commands:
 
 ```bash
 web-vuln-scanner checks
+web-vuln-scanner checks --json
 web-vuln-scanner profiles
+web-vuln-scanner validate-config config/default_config.yaml
 web-vuln-scanner doctor
 web-vuln-scanner version
 ```
 
-`checks` lists the available checks with their maturity, activity level, CWE, and WSTG mapping. `doctor` verifies the installed runtime and packaged configuration before a scan.
+Additional installed helpers:
+
+```bash
+web-vuln-sarif --help
+web-vuln-profile --help
+web-vuln-diff --help
+web-vuln-har --help
+```
+
+`checks` lists available checks with maturity, activity level, and useful CWE/WSTG mappings. `doctor` verifies the installed runtime and packaged configuration before a scan.
 
 ## Profiles
 
@@ -89,7 +100,7 @@ web-vuln-scanner version
 web-vuln-scanner scan https://target.example --profile passive
 ```
 
-This is the default. It crawls and inventories the application, then runs passive posture checks. It does not send SQLi, XSS, redirect, SSTI, CRLF, or other active payloads.
+This is the default. It crawls and inventories the application, then runs passive posture checks. It does not send SQLi, XSS, redirect, SSTI, CRLF, SSRF-style, or other active payloads.
 
 ### safe-active
 
@@ -106,7 +117,10 @@ Enabled checks include:
 - open redirect using a reserved `.invalid` destination;
 - SSTI using two arithmetic canaries rather than command execution;
 - CRLF/response-header injection using a dedicated response-header canary;
-- TRACE reflection.
+- TRACE reflection;
+- same-origin URL-fetch behavior on observed URL-like parameters.
+
+The same-origin URL-fetch check never targets cloud metadata services, private address ranges, or external callback infrastructure. It reports fetch-like behavior rather than claiming internal-network SSRF.
 
 The scanner does not use time-based SQLi payloads in release profiles.
 
@@ -118,7 +132,9 @@ web-vuln-scanner scan https://target.example \
   --config config/default_config.yaml
 ```
 
-This profile keeps the stable active checks and also enables browser-assisted discovery. Auth actors, RBAC verification, and workflows are available when they are configured.
+This profile keeps the stable active checks and also enables browser-assisted discovery. Auth actors, RBAC verification, and workflows are available when configured.
+
+Browser XSS confirmation is bounded to a small set of GET/query candidates. Chromium must execute an inert handler that only sets a DOM marker before the condition can be marked `verified`.
 
 Generic browser form submission and broad button clicking are still off by default. Browser login flows are separate and must be configured with explicit selectors.
 
@@ -130,9 +146,11 @@ The active checks are intentionally narrow.
 
 Uses bounded error and response-differential probes. Boolean checks compare responses against the same baseline. A generic response change is not reported as verified SQL injection.
 
-### Reflected markup / XSS candidate
+### Reflected markup and browser XSS
 
-The scanner injects an inert `<wvs-probe>` element and parses the returned HTML. It reports only when that element is reconstructed as markup. It does **not** claim JavaScript execution unless a future browser verifier proves it.
+The safe-active reflected-markup check injects an inert `<wvs-probe>` element and parses the returned HTML. It reports only when that element is reconstructed as markup; HTML reconstruction alone is not described as JavaScript execution.
+
+In `full-authorized`, the browser verifier can run a separate inert event-handler canary against bounded GET/query candidates. A result is marked `verified` only if Chromium executes the handler and writes the expected DOM marker.
 
 ### Open redirect
 
@@ -150,11 +168,15 @@ Places a CR/LF canary in one observed query parameter and checks whether the ser
 
 Sends a TRACE request with a unique header and reports when the server reflects that header in a successful TRACE response.
 
-These checks correspond to OWASP WSTG areas including reflected XSS (`WSTG-INPV-01`), HTTP response splitting (`WSTG-INPV-15`), SSTI (`WSTG-INPV-18`), HTTP methods (`WSTG-CONF-06`), and SQL injection (`WSTG-INPV-05`). Coverage is not a claim of complete WSTG or OWASP Top 10 testing.
+### Same-origin URL fetch
+
+Tests URL-like observed query parameters using a reference URL on the already-authorized origin. The check is designed to identify server-side fetch behavior without contacting private networks or callback infrastructure. A positive result is not treated as proof of internal-network reachability.
+
+These checks correspond to OWASP WSTG areas including reflected XSS (`WSTG-INPV-01`), HTTP response splitting (`WSTG-INPV-15`), SSTI (`WSTG-INPV-18`), HTTP methods (`WSTG-CONF-06`), SSRF (`WSTG-INPV-19`), and SQL injection (`WSTG-INPV-05`). Coverage is not a claim of complete WSTG or OWASP Top 10 testing.
 
 ## Scope controls
 
-The target host is added to the runtime scope automatically. Extra authorized hosts can be added in YAML:
+The target host is added to runtime scope automatically. Extra authorized hosts can be added in YAML:
 
 ```yaml
 scanner:
@@ -175,6 +197,24 @@ Wildcard matching is boundary-aware. `*.example.com` does not match `badexample.
 Before HTTP dispatch, the request layer checks scope, URL scheme, redirects, and hostname resolution. Private, loopback, link-local, reserved, multicast, and unspecified IP destinations are blocked unless private targets were explicitly allowed.
 
 The current DNS guard is a preflight check; it is not socket-level IP pinning, so a narrow DNS rebinding TOCTOU window remains.
+
+## JavaScript endpoint discovery
+
+The HTTP crawler can inspect inline JavaScript and a bounded number of same-scope script files for obvious literal endpoints used by `fetch()`, Axios, `XMLHttpRequest`, and common API route strings.
+
+```yaml
+scanner:
+  crawler:
+    javascript_discovery:
+      enabled: true
+      max_scripts: 10
+      max_script_bytes: 250000
+      max_endpoints: 100
+```
+
+JavaScript is scanned as text and is not evaluated. Inferred non-GET routes remain inventory-only. Only same-scope GET routes with explicit query parameters are promoted to normal attack surfaces. Static assets and unresolved template expressions are ignored.
+
+This complements browser discovery; it does not replace browser execution for complex SPAs.
 
 ## Browser behavior
 
@@ -201,11 +241,26 @@ scanner:
 
 Avoid broad selectors on production systems.
 
+## Passive intelligence
+
+Passive web analysis records conservative technology observations from response headers, cookie **names**, generator metadata, and framework-specific HTML markers. Technology detection is inventory and does not automatically assert that a detected version is vulnerable.
+
+Additional posture analysis includes:
+
+- enforced CSP versus report-only CSP;
+- risky script sources such as `unsafe-inline`, `unsafe-eval`, wildcards, and `data:`;
+- missing `form-action` on HTML pages that contain forms;
+- high-confidence stack traces for Python, PHP, Java, .NET, Node.js, Ruby, and Go without copying the disclosed stack trace into finding evidence;
+- TLS certificate verification failures as target findings rather than generic scanner errors;
+- certificate expiry windows;
+- cache policy checks on responses that appear user-specific;
+- local JWT metadata/lifetime posture without modifying or replaying tokens.
+
 ## Auth and RBAC testing
 
 Auth actors are defined in the config and should get credentials from environment variables. Sessions are isolated per actor and worker thread so one actor's Set-Cookie state is not reused by another actor.
 
-The scanner can compare two authenticated users, evaluate a configured RBAC matrix, run authenticated crawls, and replay verified authorization findings. Access-control findings are downgraded when the required actor state or comparison evidence is missing.
+The scanner can compare two authenticated users, evaluate a configured RBAC matrix, run authenticated crawls, and replay verified authorization findings. Access-control findings are downgraded when required actor state or comparison evidence is missing.
 
 The sample actors in `config/default_config.yaml` are placeholders. Replace their URLs/selectors and set environment variables only for authorized test accounts.
 
@@ -220,7 +275,40 @@ web-vuln-scanner scan https://target.example \
   --graphql https://target.example/graphql
 ```
 
+OpenAPI 3 discovery inventories query, path, header, cookie, and request-body inputs and materializes path placeholders into testable surfaces. GraphQL introspection records root queries, mutations, and their arguments rather than only reporting a type count.
+
 API requests pass through the same request manager and scope policy as crawler traffic.
+
+## Active parameter suppression
+
+V2 plugin requests pass through a centralized attack policy before dispatch. The default configuration excludes common CSRF, password, and token field names from active plugin payloads.
+
+```yaml
+scanner:
+  attack_policy:
+    skip_parameters:
+      - csrf_token
+      - password
+      - access_token
+    skip_parameter_patterns:
+      - '^dangerous_action_'
+```
+
+Suppressed test cases are counted in scan diagnostics. Invalid regex patterns fail config validation instead of silently changing behavior.
+
+## HAR import
+
+`web-vuln-har` converts a browser/proxy HAR into a sanitized attack-surface inventory without replaying requests:
+
+```bash
+web-vuln-har session.har \
+  --target https://target.example \
+  --output surfaces.json
+```
+
+It preserves method, base URL, parameter names, selected non-secret header names, and content type. Query/body values and credential headers such as Authorization and Cookie are intentionally discarded.
+
+For an explicitly authorized loopback/private target, add `--allow-private`.
 
 ## Reports
 
@@ -236,11 +324,29 @@ web-vuln-sarif reports/scan_report.json \
   --output reports/scan_report.sarif
 ```
 
+Compare two JSON reports using a stable cross-scan issue identity:
+
+```bash
+web-vuln-diff reports/baseline/scan_report.json \
+  reports/current/scan_report.json
+```
+
+Gate only on newly introduced high/critical findings:
+
+```bash
+web-vuln-diff reports/baseline/scan_report.json \
+  reports/current/scan_report.json \
+  --fail-on-new \
+  --min-severity high
+```
+
+`--fail-on-regression` also fails when an existing issue moves to a stronger severity or verification state.
+
 The reporter redacts common credential forms before persistence. CI also scans smoke-test artifacts for known secret sentinels. Reports, screenshots, traces, replay files, and browser state can still contain sensitive application data, so handle the output directory as assessment evidence.
 
 ## CI exit gates
 
-Normal exit codes are:
+Normal scanner exit codes are:
 
 - `0`: completed with no reportable findings;
 - `1`: completed with findings;
@@ -256,7 +362,7 @@ web-vuln-scanner scan https://target.example \
   --fail-on-verification verified
 ```
 
-Runtime failures and partial scans are never converted into success by these gates.
+Runtime failures and partial scans are never converted into success by these gates. `web-vuln-diff` has separate baseline-oriented gates for new or regressed issues.
 
 ## Configuration
 
@@ -268,12 +374,17 @@ scanner:
     web:
       enabled: false
       max_urls: 10
+      max_params_per_url: 3
+      max_requests: 50
       ssti: true
       crlf: true
       trace: true
+      ssrf_same_origin: true
 ```
 
-Profiles override `enabled` as needed. `safe-active` uses 10 URLs; `full-authorized` uses 20 unless the config is changed.
+Profiles override `enabled` and request budgets as needed. XML internal-entity probing remains off in every built-in profile and requires explicit configuration because XML POST/PUT/PATCH routes may change application state.
+
+See [`docs/advanced-workflows.md`](docs/advanced-workflows.md) for baseline comparison, HAR sanitization, JavaScript discovery limits, attack-parameter suppression, and a recommended CI pattern.
 
 ## Docker
 
@@ -294,7 +405,7 @@ python -m pip_audit -r requirements.txt
 python -m build
 ```
 
-The CI workflow also tests Python 3.10, 3.11, and 3.12, installs the built wheel in a clean virtual environment, runs the local browser/auth/workflow smoke target, checks smoke artifacts for test secrets, converts the report to SARIF, and exercises the Docker runtime.
+The CI workflow also tests Python 3.10, 3.11, and 3.12, installs the built wheel in a clean virtual environment, exercises `web-vuln-diff` and sanitized HAR import, runs the local browser/auth/workflow smoke target, checks smoke artifacts for test secrets, converts the report to SARIF, and exercises the Docker runtime.
 
 ## Adding a check
 
