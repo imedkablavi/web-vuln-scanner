@@ -71,28 +71,26 @@ scanner:
     baseline_actor_id: low_user
     authenticated_crawl:
       enabled: false
-      actor_ids: ["low_user"]
+      actor_ids: []
     actors:
       - actor_id: low_user
         display_name: Low Privilege User
         auth_type: cookie
         role: low
-        notes:
-          - "Sample actor. Set the environment variables below only for an authorized test account."
-        enabled: true
+        enabled: false
         auth:
           auth_scheme: form_login
-          login_url: "http://target.local/login"
-          verify_url: "http://target.local/dashboard"
+          login_url: ""
+          verify_url: ""
           username_env: "LOW_USER_USERNAME"
           password_env: "LOW_USER_PASSWORD"
-          success_indicators: ["Logout", "/dashboard"]
-          failure_indicators: ["Invalid credentials", "/login"]
+          success_indicators: []
+          failure_indicators: []
           session:
-            cookie_names: ["session"]
-            csrf_cookie_names: ["csrf"]
+            cookie_names: []
+            csrf_cookie_names: []
             refresh:
-              enabled: true
+              enabled: false
               strategy: relogin
               pre_expiry_seconds: 30
               retry_on_401: true
@@ -103,29 +101,27 @@ scanner:
         display_name: Peer User
         auth_type: cookie
         role: low
-        notes:
-          - "Sample browser-login actor for cross-account authorization checks."
-        enabled: true
+        enabled: false
         auth:
           auth_scheme: browser_form_login
-          login_url: "http://target.local/login"
-          browser_login_url: "http://target.local/login"
+          login_url: ""
+          browser_login_url: ""
           use_browser: true
           browser_required: false
-          verify_url: "http://target.local/dashboard"
+          verify_url: ""
           username_env: "PEER_USER_USERNAME"
           password_env: "PEER_USER_PASSWORD"
-          username_selector: 'input[name="username"]'
-          password_selector: 'input[name="password"]'
-          submit_selector: 'button[type="submit"]'
-          success_selector: 'a[href="/logout"]'
-          success_indicators: ["Logout", "/dashboard"]
-          failure_indicators: ["Invalid credentials", "/login"]
+          username_selector: ""
+          password_selector: ""
+          submit_selector: ""
+          success_selector: ""
+          success_indicators: []
+          failure_indicators: []
           session:
-            cookie_names: ["session"]
-            csrf_cookie_names: ["csrf"]
+            cookie_names: []
+            csrf_cookie_names: []
             refresh:
-              enabled: true
+              enabled: false
               strategy: relogin
               pre_expiry_seconds: 30
               retry_on_401: true
@@ -136,22 +132,20 @@ scanner:
         display_name: Admin User
         auth_type: cookie
         role: admin
-        notes:
-          - "Sample elevated actor. Use a disposable authorized account where possible."
-        enabled: true
+        enabled: false
         auth:
           auth_scheme: form_login
-          login_url: "http://target.local/login"
-          verify_url: "http://target.local/dashboard"
+          login_url: ""
+          verify_url: ""
           username_env: "ADMIN_USER_USERNAME"
           password_env: "ADMIN_USER_PASSWORD"
-          success_indicators: ["Logout", "/dashboard"]
-          failure_indicators: ["Invalid credentials", "/login"]
+          success_indicators: []
+          failure_indicators: []
           session:
-            cookie_names: ["session"]
-            csrf_cookie_names: ["csrf"]
+            cookie_names: []
+            csrf_cookie_names: []
             refresh:
-              enabled: true
+              enabled: false
               strategy: relogin
               pre_expiry_seconds: 30
               retry_on_401: true
@@ -163,13 +157,11 @@ scanner:
         auth_type: bearer
         role: api
         enabled: false
-        notes:
-          - "Sample bearer-token actor for API authorization tests."
         auth:
           auth_scheme: bearer_with_refresh
-          token_url: "http://target.local/api/login"
-          refresh_url: "http://target.local/api/refresh"
-          verify_url: "http://target.local/api/profile"
+          token_url: ""
+          refresh_url: ""
+          verify_url: ""
           username_env: "API_USER_USERNAME"
           password_env: "API_USER_PASSWORD"
           access_token_json_path: "access_token"
@@ -179,18 +171,18 @@ scanner:
             Authorization: "Bearer {access_token}"
           session:
             refresh:
-              enabled: true
+              enabled: false
               strategy: refresh_token
               pre_expiry_seconds: 10
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
 
-  rbac_matrix_file: "config/rbac_matrix.yaml"
+  rbac_matrix_file: ""
 
   workflows:
     enabled: false
-    directory: "workflows/default"
+    directory: ""
     files: []
     replay_verified_only: true
 
