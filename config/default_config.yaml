@@ -37,6 +37,10 @@ scanner:
     capture_auth_screenshots: false
     retain_storage_state: false
     auth_timeout_seconds: 30
+    xss_verification:
+      enabled: false
+      max_tests: 3
+      timeout_ms: 8000
     interactions:
       enabled: false
       submit_forms: false
