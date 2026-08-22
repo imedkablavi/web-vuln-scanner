@@ -14,6 +14,8 @@ from core.scanner import PluginRegistry
 def test_plugin_catalog_covers_registry():
     assert set(PluginRegistry.available) <= set(PLUGIN_CATALOG)
     assert get_plugin_metadata("sqli")["maturity"] == "stable"
+    assert get_plugin_metadata("xss_reflected")["maturity"] == "stable"
+    assert get_plugin_metadata("open_redirect")["maturity"] == "stable"
     assert get_plugin_metadata("cmd_injection")["maturity"] == "experimental"
 
 
@@ -22,15 +24,30 @@ def test_profiles_keep_experimental_plugins_disabled():
     for profile in PROFILES:
         rendered = apply_profile(config, profile)
         plugins = rendered["scanner"]["plugins"]
-        for name in ("xss_reflected", "lfi", "cmd_injection", "open_redirect"):
+        for name in ("lfi", "cmd_injection"):
             assert plugins[name]["enabled"] is False
 
 
-def test_passive_profile_disables_active_plugins():
+def test_passive_profile_disables_all_active_checks():
     rendered = apply_profile({"scanner": {}}, "passive")
-    assert rendered["scanner"]["profile"] == "passive"
-    assert rendered["scanner"]["plugins"]["sqli"]["enabled"] is False
-    assert rendered["scanner"]["plugins"]["business_logic"]["enabled"] is False
+    scanner = rendered["scanner"]
+    assert scanner["profile"] == "passive"
+    assert scanner["active_checks"]["web"]["enabled"] is False
+    for name in ("sqli", "business_logic", "xss_reflected", "open_redirect", "lfi", "cmd_injection"):
+        assert scanner["plugins"][name]["enabled"] is False
+
+
+def test_safe_active_enables_bounded_hardened_checks():
+    rendered = apply_profile({"scanner": {}}, "safe-active")
+    scanner = rendered["scanner"]
+    assert scanner["active_checks"]["web"]["enabled"] is True
+    assert scanner["active_checks"]["web"]["ssti"] is True
+    assert scanner["active_checks"]["web"]["crlf"] is True
+    assert scanner["active_checks"]["web"]["trace"] is True
+    assert scanner["plugins"]["sqli"]["enabled"] is True
+    assert scanner["plugins"]["xss_reflected"]["enabled"] is True
+    assert scanner["plugins"]["open_redirect"]["enabled"] is True
+    assert scanner["request"]["follow_redirects"] is False
 
 
 def test_unknown_profile_is_rejected():
