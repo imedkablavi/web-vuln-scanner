@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+from .scan_strategies import STRATEGIES
+
 
 _SCANNER_KEYS = {
     "target",
     "profile",
+    "strategy",
     "scope",
     "crawler",
     "concurrency",
@@ -85,6 +88,12 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
 
     for key in sorted(set(scanner) - _SCANNER_KEYS):
         warnings.append(f"Unknown scanner config key: scanner.{key}")
+
+    strategy = str(scanner.get("strategy", "balanced") or "balanced").strip().lower()
+    if strategy not in STRATEGIES:
+        raise ValueError(
+            f"scanner.strategy must be one of: {', '.join(sorted(STRATEGIES))}"
+        )
 
     for path, message in _DEPRECATED_KEYS.items():
         cursor: Any = root
