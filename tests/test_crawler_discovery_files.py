@@ -120,6 +120,7 @@ def test_crawler_uses_robots_nested_sitemaps_and_records_forms(tmp_path):
     crawler.crawl(root)
 
     called_urls = {url for _, url in requester.calls}
+    assert requester.calls[0] == ("GET", root)
     assert "https://example.test/robots.txt" in called_urls
     assert "https://example.test/map.xml" in called_urls
     assert "https://example.test/map-2.xml" in called_urls
@@ -162,7 +163,7 @@ def test_crawler_uses_robots_nested_sitemaps_and_records_forms(tmp_path):
     assert '"name": "token"' in text
 
 
-def test_discovery_files_respect_scope_and_size_limit(tmp_path):
+def test_discovery_files_respect_scope_and_are_noncritical(tmp_path):
     root = "https://example.test/"
     responses = {
         root: FakeResponse(200, "<html></html>"),
@@ -180,6 +181,39 @@ def test_discovery_files_respect_scope_and_size_limit(tmp_path):
     crawler.crawl(root)
 
     called_urls = {url for _, url in requester.calls}
+    assert requester.calls[0] == ("GET", root)
     assert "https://offscope.test/map.xml" not in called_urls
     assert "https://example.test/local" in called_urls
-    assert any(item.get("kind") == "sitemap" for item in crawler.errors)
+    discovery_errors = crawler.get_discovery_file_report()["errors"]
+    assert any(item.get("kind") == "sitemap" for item in discovery_errors)
+    assert crawler.errors == []
+
+
+def test_root_target_has_priority_over_discovery_seed_budget(tmp_path):
+    root = "https://example.test/"
+    responses = {
+        root: FakeResponse(200, "<html><a href='/normal'>normal</a></html>"),
+        "https://example.test/robots.txt": FakeResponse(200, "Disallow: /hidden\n"),
+        "https://example.test/sitemap.xml": FakeResponse(
+            200,
+            """<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.test/from-map</loc></url>
+            </urlset>""",
+        ),
+        "https://example.test/hidden": FakeResponse(200, "<html></html>"),
+        "https://example.test/from-map": FakeResponse(200, "<html></html>"),
+        "https://example.test/normal": FakeResponse(200, "<html></html>"),
+    }
+    config = _config(tmp_path)
+    config["crawler"]["max_urls"] = 1
+    requester = FakeRequester(config, responses)
+    crawler = Crawler(requester, config)
+
+    crawler.crawl(root)
+
+    assert requester.calls[0] == ("GET", root)
+    called_urls = [url for _, url in requester.calls]
+    assert "https://example.test/hidden" not in called_urls
+    assert "https://example.test/from-map" not in called_urls
+    assert "https://example.test/normal" not in called_urls
+    assert crawler.pages_visited == [root]
