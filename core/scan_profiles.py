@@ -26,6 +26,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "web": {"enabled": False},
             "xml": {"enabled": False},
         },
+        "browser": {"xss_verification": {"enabled": False}},
         "passive_checks": {
             "data_exposure": {
                 "max_probe_paths": 0,
@@ -60,6 +61,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             },
             "xml": {"enabled": False},
         },
+        "browser": {"xss_verification": {"enabled": False}},
         "plugins": {
             "sqli": {
                 "enabled": True,
@@ -100,6 +102,11 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "xml": {"enabled": False},
         },
         "browser": {
+            "xss_verification": {
+                "enabled": True,
+                "max_tests": 3,
+                "timeout_ms": 8000,
+            },
             "interactions": {
                 "enabled": False,
                 "submit_forms": False,
