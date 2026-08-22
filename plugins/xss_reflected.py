@@ -23,6 +23,16 @@ class XSSReflectedPlugin(BasePlugin):
     def applicable(self, surface: AttackSurface) -> bool:
         return bool(surface.params or any(item.kind in self.supported_input_kinds for item in surface.inputs))
 
+    @staticmethod
+    def _active_input_supported(surface: AttackSurface, item) -> bool:
+        if item.kind != "body":
+            return True
+        path = str(getattr(item, "path", "") or "")
+        nested_json = path.startswith("/") and path.count("/") > 1
+        if nested_json and not bool((surface.meta or {}).get("nested_active_supported", False)):
+            return False
+        return True
+
     def generate_tests(self, surface: AttackSurface, context: Dict) -> List[TestCase]:
         targets = [(name, "query", name) for name in surface.params]
         targets.extend(
@@ -33,6 +43,7 @@ class XSSReflectedPlugin(BasePlugin):
             )
             for item in surface.inputs
             if item.kind in self.supported_input_kinds
+            and self._active_input_supported(surface, item)
         )
         deduped = []
         seen = set()
