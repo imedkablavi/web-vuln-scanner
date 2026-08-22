@@ -48,6 +48,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "web": {
                 "enabled": True,
                 "max_urls": 10,
+                "max_requests": 50,
                 "ssti": True,
                 "crlf": True,
                 "trace": True,
@@ -83,6 +84,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "web": {
                 "enabled": True,
                 "max_urls": 20,
+                "max_requests": 100,
                 "ssti": True,
                 "crlf": True,
                 "trace": True,
