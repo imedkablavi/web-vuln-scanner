@@ -68,6 +68,9 @@ def _prepare_config(target: str) -> None:
     scanner["browser_enabled"] = True
     scanner["browser"]["headless"] = True
     scanner["browser"]["slow_mo"] = 0
+    # Auth traces/screenshots/storage retention intentionally remain disabled.
+    # The smoke suite validates browser login using in-memory handoff state and
+    # must not create credential-bearing diagnostic artifacts by default.
     scanner["rbac_matrix_file"] = str(ROOT / "config" / "rbac_matrix.yaml")
     scanner["workflows"]["enabled"] = True
     scanner["workflows"]["directory"] = str(ROOT / "workflows" / "default")
@@ -376,8 +379,7 @@ def main() -> int:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         _prepare_config(target)
 
-        scan_cmd = [
-            sys.executable,
+        scanner_args = [
             "main_v2.py",
             "scan",
             target,
@@ -393,6 +395,19 @@ def main() -> int:
             str(OUTPUT_DIR),
             "--debug",
         ]
+        if os.getenv("SMOKE_COVERAGE") == "1":
+            scan_cmd = [
+                sys.executable,
+                "-m",
+                "coverage",
+                "run",
+                "--parallel-mode",
+                "--source=core,layers,plugins,workflows",
+                *scanner_args,
+            ]
+        else:
+            scan_cmd = [sys.executable, *scanner_args]
+
         scan_run = subprocess.run(
             scan_cmd,
             cwd=ROOT,
@@ -432,19 +447,16 @@ def main() -> int:
 
         required, forbidden = _validate_report(data)
         missing = [name for name, present in required.items() if not present]
-        false_positives = [name for name, present in forbidden.items() if present]
-        if missing or false_positives:
-            print(
-                "Smoke validation failed: layered verification did not meet the "
-                "truthfulness contract.",
-                file=sys.stderr,
-            )
-            print(f"Missing checks: {missing}", file=sys.stderr)
-            print(f"Forbidden verified results: {false_positives}", file=sys.stderr)
-            print("--- scanner stdout ---")
-            print(scan_run.stdout)
-            print("--- scanner stderr ---", file=sys.stderr)
-            print(scan_run.stderr, file=sys.stderr)
+        unexpected = [name for name, present in forbidden.items() if present]
+        if missing or unexpected:
+            if missing:
+                print(f"Smoke validation missing: {missing}", file=sys.stderr)
+            if unexpected:
+                print(
+                    f"Smoke validation false-positive regressions: {unexpected}",
+                    file=sys.stderr,
+                )
+            print(json.dumps(data.get("scan_info", {}), indent=2))
             return 1
 
         print("Smoke run successful.")
@@ -453,10 +465,10 @@ def main() -> int:
     finally:
         server_proc.terminate()
         try:
-            server_proc.wait(timeout=3)
+            server_proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             server_proc.kill()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
