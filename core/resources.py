@@ -42,25 +42,18 @@ def bundled_default_config() -> Dict[str, Any]:
     return yaml.safe_load(text) or {}
 
 
-def _copy_bundled_resources(config: Dict[str, Any], root: Path) -> None:
+def _prepare_bundled_runtime_defaults(config: Dict[str, Any]) -> None:
+    """Keep installed defaults neutral; assessment policy must come from the user.
+
+    Safe detection templates are loaded directly from package resources by their
+    scanner layer. RBAC matrices and workflow scenarios are target-specific and
+    therefore are never injected into the installed runtime configuration.
+    """
     scanner = config.setdefault("scanner", {})
-
-    rbac_source = resources.files("config").joinpath("rbac_matrix.yaml")
-    if rbac_source.is_file():
-        rbac_target = root / "rbac_matrix.yaml"
-        rbac_target.write_text(rbac_source.read_text(encoding="utf-8"), encoding="utf-8")
-        scanner["rbac_matrix_file"] = str(rbac_target)
-
-    workflow_source = resources.files("workflows").joinpath("default")
-    workflow_target = root / "workflows"
-    workflow_target.mkdir(mode=0o700, exist_ok=True)
-    if workflow_source.is_dir():
-        for item in workflow_source.iterdir():
-            if item.is_file() and item.name.lower().endswith((".yaml", ".yml")):
-                (workflow_target / item.name).write_text(
-                    item.read_text(encoding="utf-8"), encoding="utf-8"
-                )
-    scanner.setdefault("workflows", {})["directory"] = str(workflow_target)
+    scanner.setdefault("rbac_matrix_file", "")
+    workflow_cfg = scanner.setdefault("workflows", {})
+    workflow_cfg.setdefault("directory", "")
+    workflow_cfg.setdefault("files", [])
 
 
 def _resolve_user_paths(config: Dict[str, Any], base_dir: Path) -> None:
@@ -103,7 +96,7 @@ def _resolve_user_paths(config: Dict[str, Any], base_dir: Path) -> None:
 
 
 def materialize_runtime_config(config_path: str | None = None) -> Path:
-    """Create a short-lived config with absolute resource paths for installed CLI use."""
+    """Create a short-lived config with absolute user-supplied resource paths."""
     root = _new_temp_dir()
     if config_path:
         source = Path(config_path).expanduser()
@@ -111,13 +104,13 @@ def materialize_runtime_config(config_path: str | None = None) -> Path:
             if str(config_path).replace("\\", "/") != "config/default_config.yaml":
                 raise FileNotFoundError(f"Config file not found: {config_path}")
             config = bundled_default_config()
-            _copy_bundled_resources(config, root)
+            _prepare_bundled_runtime_defaults(config)
         else:
             config = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
             _resolve_user_paths(config, source.resolve().parent)
     else:
         config = bundled_default_config()
-        _copy_bundled_resources(config, root)
+        _prepare_bundled_runtime_defaults(config)
 
     validate_config(config)
     destination = root / "runtime-config.yaml"
