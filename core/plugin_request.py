@@ -16,7 +16,9 @@ def _inject_path(url: str, surface, name: str, payload: str) -> str:
     path = parsed.path or "/"
     if placeholder in path:
         path = path.replace(placeholder, encoded, 1)
-        return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+        )
 
     original = ""
     for field in getattr(surface, "inputs", []) or []:
@@ -44,9 +46,30 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
     if kind not in _SUPPORTED_KINDS:
         raise ValueError(f"Unsupported plugin input kind: {kind or '<missing>'}")
 
+    payload = getattr(testcase, "payload", "")
+    name = str(getattr(testcase, "param", "") or "")
+
+    # Third-party/fixture request adapters written against the older scanner
+    # contract may only expose send_surface(). Preserve query/body behavior for
+    # those adapters, while requiring the real RequestManager contract for
+    # header, cookie, path, method-override, and redirect-aware test cases.
+    if not hasattr(requester, "send_as_actor"):
+        legacy_supported = (
+            kind in {"query", "body"}
+            and not getattr(testcase, "method_override", None)
+            and getattr(testcase, "allow_redirects", None) is None
+            and hasattr(requester, "send_surface")
+        )
+        if legacy_supported:
+            return requester.send_surface(surface, name, payload)
+        raise RuntimeError(
+            "This plugin test requires a RequestManager-compatible send_as_actor() implementation"
+        )
+
     params = dict(getattr(surface, "params", {}) or {})
     data = {}
-    headers = dict(requester.config.get("auth", {}).get("headers", {}) or {})
+    requester_config = getattr(requester, "config", {}) or {}
+    headers = dict(requester_config.get("auth", {}).get("headers", {}) or {})
     cookies = dict(getattr(requester, "cookies", {}) or {})
     has_body_inputs = False
 
@@ -62,8 +85,6 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
         elif field_kind == "cookie":
             cookies[field.name] = field.value if field.value is not None else ""
 
-    payload = getattr(testcase, "payload", "")
-    name = str(getattr(testcase, "param", "") or "")
     target_url = surface.url
     if kind == "query":
         params[name] = payload
@@ -84,7 +105,9 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
     if method not in _SUPPORTED_METHODS:
         raise ValueError(f"Unsupported plugin HTTP method: {method}")
 
-    content_type = str((getattr(surface, "meta", {}) or {}).get("content_type", "")).lower()
+    content_type = str(
+        (getattr(surface, "meta", {}) or {}).get("content_type", "")
+    ).lower()
     json_payload = data if content_type.startswith("application/json") else None
     form_payload = None if json_payload is not None else data
 
@@ -104,7 +127,7 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
         json=json_payload if method not in {"GET", "HEAD"} else None,
         headers=headers or None,
         cookies=cookies or None,
-        timeout=requester.timeout,
+        timeout=getattr(requester, "timeout", None),
         allow_redirects=getattr(testcase, "allow_redirects", None),
         source=f"{surface.source}:{getattr(testcase, 'plugin', 'plugin')}",
         replay_of=replay_of,
