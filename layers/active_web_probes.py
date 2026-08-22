@@ -11,9 +11,9 @@ from core.redaction import redact_text
 class ActiveWebProbeScanner:
     """Low-impact checks used by the safe-active and full-authorized profiles.
 
-    The layer tests one observed query parameter per URL, has an independent
-    request budget, never follows redirects, and does not use external callback,
-    command-execution, file-read, or timing payloads.
+    The layer has explicit URL, parameter, and request caps. It never follows
+    redirects and does not use external callbacks, command execution, file
+    reads, or timing payloads.
     """
 
     def __init__(self, requester, config):
@@ -22,6 +22,9 @@ class ActiveWebProbeScanner:
         self.layer_config = config.get("active_checks", {}).get("web", {})
         self.enabled = bool(self.layer_config.get("enabled", False))
         self.max_urls = max(0, int(self.layer_config.get("max_urls", 10)))
+        self.max_params_per_url = max(
+            0, int(self.layer_config.get("max_params_per_url", 3))
+        )
         self.max_requests = max(0, int(self.layer_config.get("max_requests", 50)))
         self.enable_ssti = bool(self.layer_config.get("ssti", True))
         self.enable_crlf = bool(self.layer_config.get("crlf", True))
@@ -29,6 +32,7 @@ class ActiveWebProbeScanner:
         self.errors: List[Dict[str, Any]] = []
         self.skipped: List[str] = []
         self.checked_urls = 0
+        self.checked_parameters = 0
         self.requests_sent = 0
         self._trace_origins: set[str] = set()
         self._budget_notice_written = False
@@ -53,22 +57,31 @@ class ActiveWebProbeScanner:
                 if finding:
                     findings.append(finding)
 
-            if not self._first_query_param(url):
-                continue
-            if self.enable_crlf and self._budget_available():
-                finding = self._check_crlf(url)
-                if finding:
-                    findings.append(finding)
-            if self.enable_ssti and self._remaining_requests() >= 2:
-                finding = self._check_ssti(url, snapshot.get("text") or "")
-                if finding:
-                    findings.append(finding)
+            parameters = self._query_params(url)[: self.max_params_per_url]
+            for param, _value in parameters:
+                if not self._budget_available():
+                    break
+                self.checked_parameters += 1
+                if self.enable_crlf:
+                    finding = self._check_crlf(url, param)
+                    if finding:
+                        findings.append(finding)
+                if self.enable_ssti and self._remaining_requests() >= 2:
+                    finding = self._check_ssti(
+                        url,
+                        param,
+                        str(snapshot.get("text") or ""),
+                    )
+                    if finding:
+                        findings.append(finding)
         return findings, self._meta()
 
     def _meta(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
             "checked_urls": self.checked_urls,
+            "checked_parameters": self.checked_parameters,
+            "max_params_per_url": self.max_params_per_url,
             "requests_sent": self.requests_sent,
             "max_requests": self.max_requests,
             "trace_origins_checked": len(self._trace_origins),
@@ -113,9 +126,15 @@ class ActiveWebProbeScanner:
         return f"wvs-{digest}"
 
     @staticmethod
-    def _first_query_param(url: str) -> tuple[str, str] | None:
-        pairs = parse_qsl(urlsplit(url).query, keep_blank_values=True)
-        return pairs[0] if pairs else None
+    def _query_params(url: str) -> list[tuple[str, str]]:
+        seen: set[str] = set()
+        result: list[tuple[str, str]] = []
+        for name, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+            if name in seen:
+                continue
+            seen.add(name)
+            result.append((name, value))
+        return result
 
     @staticmethod
     def _replace_query_value(url: str, name: str, value: str) -> tuple[str, list[tuple[str, str]]]:
@@ -131,7 +150,9 @@ class ActiveWebProbeScanner:
                 updated.append((key, current))
         if not replaced:
             updated.append((name, value))
-        base_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", parsed.fragment))
+        base_url = urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path or "/", "", parsed.fragment)
+        )
         return base_url, updated
 
     def _send_query_probe(self, url: str, param: str, payload: str):
@@ -146,18 +167,16 @@ class ActiveWebProbeScanner:
             source="safe-active-web",
         )
 
-    def _check_crlf(self, url: str) -> Finding | None:
-        candidate = self._first_query_param(url)
-        if not candidate:
-            return None
-        param, _ = candidate
+    def _check_crlf(self, url: str, param: str) -> Finding | None:
         token = self._token("crlf", url, param)
         header_name = "X-WVS-Canary"
         payload = f"probe\r\n{header_name}: {token}"
         try:
             response = self._send_query_probe(url, param, payload)
         except Exception as exc:
-            self.errors.append({"url": url, "check": "crlf", "error": str(exc)})
+            self.errors.append(
+                {"url": url, "parameter": param, "check": "crlf", "error": str(exc)}
+            )
             return None
         if response is None:
             return None
@@ -180,19 +199,27 @@ class ActiveWebProbeScanner:
                 "status": response.status_code,
             },
             remediation="Reject CR/LF characters in values that can reach response headers and build headers through framework-safe APIs.",
-            reproduction={"method": "GET", "url": url, "param": param, "payload": payload},
+            reproduction={
+                "method": "GET",
+                "url": url,
+                "param": param,
+                "payload": payload,
+            },
             verification_status="verified",
             scanner_mode="safe-active-web",
             reproducible=True,
             target={"source": "safe-active-web", "parameter": param},
-            notes=["The canary appeared as a separate response header; no cache or second-response payload was sent."],
+            notes=[
+                "The canary appeared as a separate response header; no cache or second-response payload was sent."
+            ],
         )
 
-    def _check_ssti(self, url: str, baseline_text: str) -> Finding | None:
-        candidate = self._first_query_param(url)
-        if not candidate:
-            return None
-        param, _ = candidate
+    def _check_ssti(
+        self,
+        url: str,
+        param: str,
+        baseline_text: str,
+    ) -> Finding | None:
         token = self._token("ssti", url, param)
         families = [
             ("double-curly", "{{13*17}}", "{{19*23}}", "221", "437"),
@@ -200,7 +227,6 @@ class ActiveWebProbeScanner:
         ]
         for family, expression_a, expression_b, result_a, result_b in families:
             if self._remaining_requests() < 2:
-                self._budget_available()
                 break
             payload_a = f"{token}-a-{expression_a}-end"
             payload_b = f"{token}-b-{expression_b}-end"
@@ -210,7 +236,9 @@ class ActiveWebProbeScanner:
                 response_a = self._send_query_probe(url, param, payload_a)
                 response_b = self._send_query_probe(url, param, payload_b)
             except Exception as exc:
-                self.errors.append({"url": url, "check": "ssti", "error": str(exc)})
+                self.errors.append(
+                    {"url": url, "parameter": param, "check": "ssti", "error": str(exc)}
+                )
                 continue
             if response_a is None or response_b is None:
                 continue
@@ -253,7 +281,9 @@ class ActiveWebProbeScanner:
                 scanner_mode="safe-active-web",
                 reproducible=True,
                 target={"source": "safe-active-web", "parameter": param},
-                notes=["Two arithmetic canaries produced two distinct evaluated results; no file, process, network, or timing primitive was used."],
+                notes=[
+                    "Two arithmetic canaries produced two distinct evaluated results; no file, process, network, or timing primitive was used."
+                ],
             )
         return None
 
@@ -293,7 +323,11 @@ class ActiveWebProbeScanner:
                 "canary": token,
             },
             remediation="Disable TRACE unless it is explicitly required and covered by a documented operational need.",
-            reproduction={"method": "TRACE", "url": url, "headers": {header_name: token}},
+            reproduction={
+                "method": "TRACE",
+                "url": url,
+                "headers": {header_name: token},
+            },
             verification_status="detected",
             scanner_mode="safe-active-web",
             reproducible=True,
