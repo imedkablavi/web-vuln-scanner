@@ -59,6 +59,18 @@ class BasePlugin(ABC):
         except (TypeError, ValueError):
             return 6
 
+    @staticmethod
+    def surface_active_eligible(surface: AttackSurface) -> bool:
+        """Return False when discovery explicitly marks a surface inventory-only.
+
+        Missing metadata remains eligible for backward compatibility. Importers
+        can fail closed by setting ``active_eligible: false`` without relying on
+        every caller to remember an additional filtering step.
+        """
+
+        meta = getattr(surface, "meta", {}) or {}
+        return meta.get("active_eligible") is not False
+
     @abstractmethod
     def applicable(self, surface: AttackSurface) -> bool:
         ...
@@ -90,6 +102,8 @@ class BasePlugin(ABC):
         """Compatibility adapter for plugins that still call ``run`` directly."""
 
         findings: List[Finding] = []
+        if not self.surface_active_eligible(surface):
+            return findings
         if all(
             hasattr(self, attr)
             for attr in ("generate_tests", "verify", "build_finding")
