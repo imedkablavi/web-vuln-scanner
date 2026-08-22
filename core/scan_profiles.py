@@ -10,10 +10,8 @@ import yaml
 
 
 _EXPERIMENTAL_DISABLED = {
-    "xss_reflected": {"enabled": False},
     "lfi": {"enabled": False},
     "cmd_injection": {"enabled": False},
-    "open_redirect": {"enabled": False},
 }
 
 
@@ -24,6 +22,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "crawler_enabled": True,
         "auth_verification": {"enabled": False},
         "workflows": {"enabled": False},
+        "active_checks": {"web": {"enabled": False}},
         "passive_checks": {
             "data_exposure": {
                 "max_probe_paths": 0,
@@ -33,6 +32,8 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "plugins": {
             "sqli": {"enabled": False},
             "business_logic": {"enabled": False},
+            "xss_reflected": {"enabled": False},
+            "open_redirect": {"enabled": False},
             **_EXPERIMENTAL_DISABLED,
         },
     },
@@ -42,6 +43,16 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "crawler_enabled": True,
         "auth_verification": {"enabled": False},
         "workflows": {"enabled": False},
+        "request": {"follow_redirects": False},
+        "active_checks": {
+            "web": {
+                "enabled": True,
+                "max_urls": 10,
+                "ssti": True,
+                "crlf": True,
+                "trace": True,
+            }
+        },
         "plugins": {
             "sqli": {
                 "enabled": True,
@@ -52,6 +63,14 @@ PROFILES: Dict[str, Dict[str, Any]] = {
                 "enabled": True,
                 "idor": {"max_tests_per_surface": 3},
             },
+            "xss_reflected": {
+                "enabled": True,
+                "max_tests_per_surface": 4,
+            },
+            "open_redirect": {
+                "enabled": True,
+                "max_tests_per_surface": 2,
+            },
             **_EXPERIMENTAL_DISABLED,
         },
     },
@@ -59,6 +78,16 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "scope": {"resolve_dns": True},
         "browser_enabled": True,
         "crawler_enabled": True,
+        "request": {"follow_redirects": False},
+        "active_checks": {
+            "web": {
+                "enabled": True,
+                "max_urls": 20,
+                "ssti": True,
+                "crlf": True,
+                "trace": True,
+            }
+        },
         "browser": {
             "interactions": {
                 "enabled": False,
@@ -78,6 +107,14 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "business_logic": {
                 "enabled": True,
                 "idor": {"max_tests_per_surface": 5},
+            },
+            "xss_reflected": {
+                "enabled": True,
+                "max_tests_per_surface": 6,
+            },
+            "open_redirect": {
+                "enabled": True,
+                "max_tests_per_surface": 3,
             },
             **_EXPERIMENTAL_DISABLED,
         },
@@ -137,7 +174,7 @@ def materialize_profile(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Materialize a conservative scan profile into a scanner config"
+        description="Write one of the built-in scanner profiles to a YAML file."
     )
     parser.add_argument("profile", choices=sorted(PROFILES))
     parser.add_argument("--config", default="config/default_config.yaml")
