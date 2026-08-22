@@ -111,6 +111,26 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
                 f"scanner.crawler.{key}",
                 allow_zero=(key == "max_depth"),
             )
+    javascript_discovery = _mapping(
+        crawler.get("javascript_discovery", {}),
+        "scanner.crawler.javascript_discovery",
+    )
+    if "enabled" in javascript_discovery and not isinstance(
+        javascript_discovery["enabled"], bool
+    ):
+        raise ValueError("scanner.crawler.javascript_discovery.enabled must be boolean")
+    for key in ("max_scripts", "max_endpoints"):
+        if key in javascript_discovery:
+            _positive_int(
+                javascript_discovery[key],
+                f"scanner.crawler.javascript_discovery.{key}",
+                allow_zero=True,
+            )
+    if "max_script_bytes" in javascript_discovery:
+        _positive_int(
+            javascript_discovery["max_script_bytes"],
+            "scanner.crawler.javascript_discovery.max_script_bytes",
+        )
 
     concurrency = _mapping(scanner.get("concurrency", {}), "scanner.concurrency")
     for key in (
@@ -220,6 +240,21 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
         scanner.get("passive_checks", {}),
         "scanner.passive_checks",
     )
+    passive_web = _mapping(
+        passive_checks.get("web", {}),
+        "scanner.passive_checks.web",
+    )
+    if "enabled" in passive_web and not isinstance(passive_web["enabled"], bool):
+        raise ValueError("scanner.passive_checks.web.enabled must be boolean")
+    if "max_urls" in passive_web:
+        _positive_int(
+            passive_web["max_urls"],
+            "scanner.passive_checks.web.max_urls",
+            allow_zero=True,
+        )
+    if "origin_probe" in passive_web and not isinstance(passive_web["origin_probe"], str):
+        raise ValueError("scanner.passive_checks.web.origin_probe must be a string")
+
     auth_tokens = _mapping(
         passive_checks.get("auth_tokens", {}),
         "scanner.passive_checks.auth_tokens",
