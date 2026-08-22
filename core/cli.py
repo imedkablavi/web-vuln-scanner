@@ -193,6 +193,18 @@ def _install_runtime_config(argv: list[str]) -> str:
     return str(runtime_path)
 
 
+def _write_runtime_config(runtime: Path, config: dict) -> None:
+    validate_config(config)
+    runtime.write_text(
+        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(runtime, 0o600)
+    except OSError:
+        pass
+
+
 def _apply_checkpoint_override(
     runtime_path: str | Path,
     *,
@@ -224,15 +236,37 @@ def _apply_checkpoint_override(
         "flush_every": int(existing.get("flush_every", 10) or 10),
         "keep_completed": bool(existing.get("keep_completed", False)),
     }
-    validate_config(config)
-    runtime.write_text(
-        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    try:
-        os.chmod(runtime, 0o600)
-    except OSError:
-        pass
+    _write_runtime_config(runtime, config)
+
+
+def _apply_har_seed_override(runtime_path: str | Path, har_seed_path: str = "") -> None:
+    selected = str(har_seed_path or "").strip()
+    if not selected:
+        return
+    path = Path(selected).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    if not path.is_file():
+        print(f"HAR seed file not found: {path}", file=sys.stderr)
+        raise SystemExit(2)
+
+    runtime = Path(runtime_path)
+    config = yaml.safe_load(runtime.read_text(encoding="utf-8")) or {}
+    crawler = config.setdefault("scanner", {}).setdefault("crawler", {})
+    existing = crawler.get("har_seed", {}) or {}
+    if not isinstance(existing, dict):
+        print("scanner.crawler.har_seed must be a mapping", file=sys.stderr)
+        raise SystemExit(2)
+    files = [str(item) for item in existing.get("files", []) or [] if str(item).strip()]
+    if str(path) not in files:
+        files.append(str(path))
+    crawler["har_seed"] = {
+        "enabled": True,
+        "files": files,
+        "max_entries": int(existing.get("max_entries", 5000) or 5000),
+        "active_tests": bool(existing.get("active_tests", False)),
+    }
+    _write_runtime_config(runtime, config)
 
 
 def _validate_gate_value(value: str, ranks: dict[str, int], option: str) -> str:
@@ -434,6 +468,7 @@ def _print_scan_help() -> None:
         ("--swagger URL", "OpenAPI/Swagger JSON endpoint"),
         ("--graphql URL", "GraphQL endpoint"),
         ("--output DIR", "report directory (default: reports)"),
+        ("--har-seed PATH", "seed scoped discovery from HAR without replaying captured requests"),
         ("--checkpoint PATH", "save resumable active-test progress to PATH"),
         ("--resume PATH", "resume an interrupted/partial active-test checkpoint"),
         ("--debug", "print scanner counters and diagnostic detail"),
@@ -518,6 +553,7 @@ def main() -> None:
     )
     checkpoint_path = _pop_option(sys.argv, "--checkpoint", "")
     resume_path = _pop_option(sys.argv, "--resume", "")
+    har_seed_path = _pop_option(sys.argv, "--har-seed", "")
     if checkpoint_path and resume_path:
         raise SystemExit("--checkpoint and --resume are mutually exclusive")
 
@@ -528,6 +564,7 @@ def main() -> None:
         checkpoint_path=checkpoint_path,
         resume_path=resume_path,
     )
+    _apply_har_seed_override(runtime_path, har_seed_path)
     with open(runtime_path, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
     for warning in validate_config(config):
