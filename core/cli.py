@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -190,6 +191,48 @@ def _install_runtime_config(argv: list[str]) -> str:
     else:
         argv[index] = str(runtime_path)
     return str(runtime_path)
+
+
+def _apply_checkpoint_override(
+    runtime_path: str | Path,
+    *,
+    checkpoint_path: str = "",
+    resume_path: str = "",
+) -> None:
+    checkpoint_path = str(checkpoint_path or "").strip()
+    resume_path = str(resume_path or "").strip()
+    if checkpoint_path and resume_path:
+        raise SystemExit("--checkpoint and --resume are mutually exclusive")
+    selected = resume_path or checkpoint_path
+    if not selected:
+        return
+
+    path = Path(selected).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+
+    runtime = Path(runtime_path)
+    config = yaml.safe_load(runtime.read_text(encoding="utf-8")) or {}
+    scanner = config.setdefault("scanner", {})
+    existing = scanner.get("checkpoint", {}) or {}
+    if not isinstance(existing, dict):
+        raise SystemExit("scanner.checkpoint must be a mapping")
+    scanner["checkpoint"] = {
+        "enabled": True,
+        "path": str(path),
+        "resume": bool(resume_path),
+        "flush_every": int(existing.get("flush_every", 10) or 10),
+        "keep_completed": bool(existing.get("keep_completed", False)),
+    }
+    validate_config(config)
+    runtime.write_text(
+        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(runtime, 0o600)
+    except OSError:
+        pass
 
 
 def _validate_gate_value(value: str, ranks: dict[str, int], option: str) -> str:
@@ -391,6 +434,8 @@ def _print_scan_help() -> None:
         ("--swagger URL", "OpenAPI/Swagger JSON endpoint"),
         ("--graphql URL", "GraphQL endpoint"),
         ("--output DIR", "report directory (default: reports)"),
+        ("--checkpoint PATH", "save resumable active-test progress to PATH"),
+        ("--resume PATH", "resume an interrupted/partial active-test checkpoint"),
         ("--debug", "print scanner counters and diagnostic detail"),
         (
             "--fail-on-severity LEVEL",
@@ -471,9 +516,18 @@ def main() -> None:
         _VERIFICATION_RANK,
         "--fail-on-verification",
     )
+    checkpoint_path = _pop_option(sys.argv, "--checkpoint", "")
+    resume_path = _pop_option(sys.argv, "--resume", "")
+    if checkpoint_path and resume_path:
+        raise SystemExit("--checkpoint and --resume are mutually exclusive")
 
     output_dir = _option_value(sys.argv, "--output", "reports")
     runtime_path = _install_runtime_config(sys.argv)
+    _apply_checkpoint_override(
+        runtime_path,
+        checkpoint_path=checkpoint_path,
+        resume_path=resume_path,
+    )
     with open(runtime_path, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
     for warning in validate_config(config):
