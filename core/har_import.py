@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, Iterable, List
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
+
+from .scope import ScopePolicy
+
+
+_ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+_SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+}
+
+
+def _scope_config(target: str, *, allow_private: bool = False) -> Dict[str, Any]:
+    parsed = urlsplit(target)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("target must be an absolute http(s) URL")
+    return {
+        "target": target,
+        "scope": {
+            "allowlist": [parsed.netloc],
+            "include_domains": [parsed.netloc],
+            "exclude_paths": [],
+            "allow_private": bool(allow_private),
+            "resolve_dns": False,
+        },
+        "crawler": {"max_url_length": 4096},
+        "concurrency": {"global_timeout_seconds": 60},
+    }
+
+
+def _base_url(value: str) -> str:
+    parsed = urlsplit(str(value or ""))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
+
+
+def _header_names(headers: Iterable[Dict[str, Any]]) -> List[str]:
+    names = []
+    for header in headers or []:
+        name = str((header or {}).get("name", "")).strip()
+        if not name or name.lower() in _SENSITIVE_HEADER_NAMES:
+            continue
+        if name.lower() in {"content-type", "accept", "origin", "referer", "user-agent"}:
+            names.append(name)
+    return sorted(set(names), key=str.lower)
+
+
+def _body_fields(post_data: Dict[str, Any]) -> List[str]:
+    names = []
+    for item in post_data.get("params", []) or []:
+        name = str((item or {}).get("name", "")).strip()
+        if name:
+            names.append(name)
+
+    mime = str(post_data.get("mimeType", "") or "").lower()
+    text = str(post_data.get("text", "") or "")
+    if text and "json" in mime:
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            names.extend(str(key) for key in payload.keys())
+    return sorted(set(names))
+
+
+def _surface_from_request(request: Dict[str, Any], scope: ScopePolicy) -> Dict[str, Any] | None:
+    raw_url = str(request.get("url", "") or "").strip()
+    method = str(request.get("method", "GET") or "GET").upper()
+    if method not in _ALLOWED_METHODS or not raw_url:
+        return None
+    if not scope.is_allowed(raw_url, resolve_dns=False):
+        return None
+
+    parsed = urlsplit(raw_url)
+    query_names = sorted({name for name, _value in parse_qsl(parsed.query, keep_blank_values=True)})
+    post_data = request.get("postData") or {}
+    body_names = _body_fields(post_data) if isinstance(post_data, dict) else []
+    header_names = _header_names(request.get("headers") or [])
+
+    inputs = []
+    inputs.extend({"name": name, "kind": "query", "value": ""} for name in query_names)
+    inputs.extend({"name": name, "kind": "body", "value": ""} for name in body_names)
+
+    return {
+        "url": _base_url(raw_url),
+        "method": method,
+        "params": {name: "" for name in query_names},
+        "inputs": inputs,
+        "source": "har-import",
+        "meta": {
+            "content_type": str(post_data.get("mimeType", "") or "") if isinstance(post_data, dict) else "",
+            "observed_header_names": header_names,
+            "sanitized": True,
+        },
+    }
+
+
+def _fingerprint(surface: Dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        surface.get("method", ""),
+        surface.get("url", ""),
+        tuple(sorted((surface.get("params") or {}).keys())),
+        tuple(sorted((item.get("kind"), item.get("name")) for item in surface.get("inputs", []) or [])),
+    )
+
+
+def import_har_data(
+    data: Dict[str, Any],
+    *,
+    target: str,
+    allow_private: bool = False,
+    max_entries: int = 5000,
+) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("HAR document must be a JSON object")
+    log = data.get("log")
+    if not isinstance(log, dict) or not isinstance(log.get("entries"), list):
+        raise ValueError("HAR document is missing log.entries")
+    if max_entries <= 0:
+        raise ValueError("max_entries must be > 0")
+
+    scope = ScopePolicy(_scope_config(target, allow_private=allow_private))
+    surfaces: List[Dict[str, Any]] = []
+    seen = set()
+    skipped = {"out_of_scope": 0, "unsupported": 0, "duplicate": 0}
+
+    entries = log.get("entries", [])[:max_entries]
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("request"), dict):
+            skipped["unsupported"] += 1
+            continue
+        request = entry["request"]
+        raw_url = str(request.get("url", "") or "")
+        method = str(request.get("method", "GET") or "GET").upper()
+        if method not in _ALLOWED_METHODS or not raw_url:
+            skipped["unsupported"] += 1
+            continue
+        if not scope.is_allowed(raw_url, resolve_dns=False):
+            skipped["out_of_scope"] += 1
+            continue
+        surface = _surface_from_request(request, scope)
+        if surface is None:
+            skipped["unsupported"] += 1
+            continue
+        key = _fingerprint(surface)
+        if key in seen:
+            skipped["duplicate"] += 1
+            continue
+        seen.add(key)
+        surfaces.append(surface)
+
+    return {
+        "format": "web-vuln-scanner-surface-inventory-v1",
+        "target": target,
+        "source": "har",
+        "sanitized": True,
+        "summary": {
+            "entries_seen": len(entries),
+            "surfaces": len(surfaces),
+            "skipped": skipped,
+            "truncated": len(log.get("entries", [])) > max_entries,
+            "max_entries": max_entries,
+        },
+        "surfaces": surfaces,
+    }
+
+
+def import_har_file(
+    path: str | Path,
+    *,
+    target: str,
+    allow_private: bool = False,
+    max_entries: int = 5000,
+) -> Dict[str, Any]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return import_har_data(
+        data,
+        target=target,
+        allow_private=allow_private,
+        max_entries=max_entries,
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="web-vuln-har",
+        description="Convert a HAR file into a sanitized, scoped attack-surface inventory without replaying requests.",
+    )
+    parser.add_argument("har", help="Input HAR JSON file")
+    parser.add_argument("--target", required=True, help="Authorized http(s) target used as the import scope")
+    parser.add_argument("--output", "-o", required=True, help="Output inventory JSON path")
+    parser.add_argument("--max-entries", type=int, default=5000, help="Maximum HAR requests to inspect (default: 5000)")
+    parser.add_argument(
+        "--allow-private",
+        action="store_true",
+        help="Allow private/loopback targets when the supplied target itself is an authorized private asset",
+    )
+    args = parser.parse_args()
+
+    try:
+        inventory = import_har_file(
+            args.har,
+            target=args.target,
+            allow_private=args.allow_private,
+            max_entries=args.max_entries,
+        )
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(inventory, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"HAR import failed: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    print(
+        f"Imported {inventory['summary']['surfaces']} sanitized surface(s) "
+        f"from {inventory['summary']['entries_seen']} HAR request(s): {output}"
+    )
+
+
+if __name__ == "__main__":
+    main()
