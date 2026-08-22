@@ -14,9 +14,9 @@ from .utils import normalize_url
 class SiteMapBuilder:
     """Build a secret-minimized application map from assessment observations.
 
-    URLs are stored without query values/fragments. Input names and locations are
-    retained because they describe attack-surface coverage without persisting the
-    original parameter values.
+    URLs are stored without query values/fragments. Input names, canonical paths,
+    types, and locations are retained because they describe attack-surface
+    coverage without persisting original parameter values.
     """
 
     def __init__(self, max_entries: int = 5000):
@@ -29,19 +29,29 @@ class SiteMapBuilder:
         return normalize_url(str(url or ""))
 
     @staticmethod
-    def _clean_inputs(inputs: Iterable[InputField] | None) -> list[dict[str, str]]:
-        cleaned: list[dict[str, str]] = []
+    def _clean_inputs(inputs: Iterable[InputField] | None) -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
         seen = set()
         for item in inputs or []:
             name = str(getattr(item, "name", "") or "").strip()
             kind = str(getattr(item, "kind", "query") or "query").strip().lower()
+            path = str(getattr(item, "path", "") or "").strip()
+            data_type = str(getattr(item, "data_type", "") or "").strip()
+            required = bool(getattr(item, "required", False))
             if not name:
                 continue
-            key = (name, kind)
+            key = (kind, path or name)
             if key in seen:
                 continue
             seen.add(key)
-            cleaned.append({"name": name, "kind": kind})
+            record: dict[str, Any] = {"name": name, "kind": kind}
+            if path:
+                record["path"] = path
+            if data_type:
+                record["data_type"] = data_type
+            if required:
+                record["required"] = True
+            cleaned.append(record)
         return cleaned
 
     def record_url(
@@ -90,7 +100,8 @@ class SiteMapBuilder:
         if actor_id:
             entry["actors"].add(str(actor_id))
         for item in self._clean_inputs(inputs):
-            key = f"{item['kind']}:{item['name']}"
+            identity = item.get("path") or item["name"]
+            key = f"{item['kind']}:{identity}"
             entry["input_points"][key] = item
         if surface_id:
             entry["surface_ids"].add(str(surface_id))
@@ -103,9 +114,12 @@ class SiteMapBuilder:
         actor_id: str = "",
     ) -> None:
         inputs = list(surface.inputs or [])
-        existing = {(item.name, item.kind) for item in inputs}
+        existing = {
+            (item.name, item.kind, str(getattr(item, "path", "") or ""))
+            for item in inputs
+        }
         for name in (surface.params or {}).keys():
-            if (name, "query") not in existing:
+            if (name, "query", "") not in existing:
                 inputs.append(InputField(name=name, value=None, kind="query"))
         self.record_url(
             surface.url,
@@ -136,6 +150,9 @@ class SiteMapBuilder:
                     name=str(item.get("name", "") or ""),
                     value=None,
                     kind=str(item.get("kind", "query") or "query"),
+                    path=str(item.get("path", "") or ""),
+                    data_type=str(item.get("data_type", "") or ""),
+                    required=bool(item.get("required", False)),
                 )
                 for item in raw_inputs
                 if isinstance(item, dict) and str(item.get("name", "") or "").strip()
@@ -182,7 +199,10 @@ class SiteMapBuilder:
             sources = sorted(raw["sources"])
             input_points = sorted(
                 raw["input_points"].values(),
-                key=lambda item: (item["kind"], item["name"]),
+                key=lambda item: (
+                    str(item.get("kind", "")),
+                    str(item.get("path") or item.get("name", "")),
+                ),
             )
             for source in sources:
                 source_counts[source] += 1
@@ -207,7 +227,7 @@ class SiteMapBuilder:
             )
 
         return {
-            "schema": "webvulnscanner/site-map/1.0",
+            "schema": "webvulnscanner/site-map/1.1",
             "summary": {
                 "urls": len(serialized),
                 "requested_urls": requested_count,
