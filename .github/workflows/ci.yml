@@ -61,6 +61,7 @@ jobs:
           web-vuln-profile --help
           web-vuln-sarif --help
           web-vuln-diff --help
+          web-vuln-har --help
 
   dependency-audit:
     name: Dependency audit and SBOM
@@ -115,6 +116,7 @@ jobs:
           /tmp/wheel-test/bin/web-vuln-profile --help
           /tmp/wheel-test/bin/web-vuln-sarif --help
           /tmp/wheel-test/bin/web-vuln-diff --help
+          /tmp/wheel-test/bin/web-vuln-har --help
       - name: Run installed wheel outside source tree
         run: |
           PORT=$(/tmp/wheel-test/bin/python - <<'PY'
@@ -148,6 +150,39 @@ jobs:
           test -s /tmp/wheel-report/scan_report.json
           test -s /tmp/wheel-report/scan_report.html
           /tmp/wheel-test/bin/web-vuln-diff /tmp/wheel-report/scan_report.json /tmp/wheel-report/scan_report.json --fail-on-new
+          /tmp/wheel-test/bin/python - <<PY
+          import json
+          from pathlib import Path
+          port = ${PORT}
+          payload = {
+              "log": {
+                  "version": "1.2",
+                  "creator": {"name": "ci"},
+                  "entries": [{
+                      "request": {
+                          "method": "POST",
+                          "url": f"http://127.0.0.1:{port}/api/item?id=7&token=har-query-secret",
+                          "headers": [
+                              {"name": "Authorization", "value": "Bearer har-header-secret"},
+                              {"name": "Content-Type", "value": "application/json"},
+                          ],
+                          "postData": {
+                              "mimeType": "application/json",
+                              "text": "{\"password\":\"har-body-secret\",\"name\":\"alice\"}",
+                          },
+                      }
+                  }],
+              }
+          }
+          Path("/tmp/sample.har").write_text(json.dumps(payload), encoding="utf-8")
+          PY
+          /tmp/wheel-test/bin/web-vuln-har /tmp/sample.har \
+            --target "http://127.0.0.1:${PORT}" --allow-private \
+            --output /tmp/har-inventory.json
+          test -s /tmp/har-inventory.json
+          ! grep -q 'har-query-secret' /tmp/har-inventory.json
+          ! grep -q 'har-header-secret' /tmp/har-inventory.json
+          ! grep -q 'har-body-secret' /tmp/har-inventory.json
 
   smoke:
     name: Authorized local smoke
