@@ -214,8 +214,15 @@ class AuthenticatedActorState:
 @dataclass
 class InputField:
     name: str
-    value: Optional[str] = None
+    value: Any = None
     kind: str = "query"  # query/body/path/header/cookie
+    path: str = ""  # canonical insertion path, e.g. JSON Pointer /user/profile/email
+    data_type: str = ""
+    required: bool = False
+
+    @property
+    def canonical_name(self) -> str:
+        return self.path or self.name
 
 
 @dataclass
@@ -230,7 +237,12 @@ class AttackSurface:
 
     def __post_init__(self):
         param_keys = sorted(self.params.keys())
-        input_names = sorted([inp.name for inp in self.inputs])
+        input_names = sorted(
+            [
+                f"{inp.kind}:{getattr(inp, 'path', '') or inp.name}"
+                for inp in self.inputs
+            ]
+        )
         fingerprint = f"{self.method}:{self.url}:{param_keys}:{input_names}"
         self.id = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
 
@@ -378,231 +390,98 @@ def infer_privilege_rank(value: str | None) -> int:
 class Finding:
     plugin: str
     type: str
-    severity: str  # LOW/MEDIUM/HIGH/CRITICAL
-    confidence: str  # LOW/MEDIUM/HIGH
+    title: str
+    category: str
+    severity: str
+    confidence: str
     surface_id: str
     url: str
-    evidence: Dict[str, Any]
+    evidence: Dict
     remediation: str
-    reproduction: Dict[str, Any]
-    verification_status: str = "suspected"
-    title: str = ""
-    category: str = "web"
-    target: Dict[str, Any] = field(default_factory=dict)
-    scanner_mode: str = "active"
+    reproduction: Dict = field(default_factory=dict)
+    verification_status: str = "informational"
+    scanner_mode: str = "unknown"
     reproducible: bool = False
-    timestamps: Dict[str, str] = field(default_factory=dict)
+    target: Dict[str, Any] = field(default_factory=dict)
+    finding_id: str = ""
+    timestamp: str = ""
     actor_comparison: Dict[str, Any] = field(default_factory=dict)
-    baseline_actor_id: str = ""
-    comparison_actor_id: str = ""
-    authorization_signal: str = ""
-    auth_state: Dict[str, Any] = field(default_factory=dict)
-    login_performed: bool = False
-    refresh_performed: bool = False
-    refresh_count: int = 0
-    actor_ready: bool = False
-    auth_evidence: Dict[str, Any] = field(default_factory=dict)
-    session_expiry_state: str = ""
-    policy_source: str = ""
-    expected_access: Dict[str, Any] = field(default_factory=dict)
-    observed_access: Dict[str, Any] = field(default_factory=dict)
-    policy_verdict: str = ""
-    ownership_context: Dict[str, Any] = field(default_factory=dict)
-    deterministic_verification: bool = False
-    actor_scope: List[str] = field(default_factory=list)
-    browser_login_used: bool = False
-    session_origin: str = ""
+    authorization_evidence: Dict[str, Any] = field(default_factory=dict)
     workflow_id: str = ""
     workflow_execution_id: str = ""
-    workflow_step_ids: List[str] = field(default_factory=list)
-    workflow_checkpoint_results: List[Dict[str, Any]] = field(default_factory=list)
+    workflow_step_id: str = ""
     workflow_status: str = ""
     workflow_replay_status: str = ""
-    verification_basis: str = ""
     artifact_refs: List[Dict[str, Any]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
-    fingerprint: str = field(init=False)
-    id: str = field(init=False)
 
     def __post_init__(self):
-        self.severity = (self.severity or "LOW").upper()
-        if self.severity not in SEVERITY_ORDER:
-            self.severity = "LOW"
+        self.verification_status = normalize_verification_status(self.verification_status)
+        self.severity = (self.severity or "INFO").upper()
         self.confidence = (self.confidence or "LOW").upper()
+        if self.severity not in SEVERITY_ORDER:
+            self.severity = "INFO"
         if self.confidence not in CONFIDENCE_ORDER:
             self.confidence = "LOW"
-        self.verification_status = normalize_verification_status(self.verification_status)
-        self.evidence = self.evidence or {}
-        self.reproduction = self.reproduction or {}
-        self.title = (self.title or self.type or self.plugin or "Finding").strip()
-        self.category = (self.category or "web").strip().lower()
-        self.scanner_mode = (self.scanner_mode or "active").strip().lower()
-        self.reproducible = bool(self.reproducible)
-        self.target = self._normalize_target(self.target)
-        self.timestamps = self._normalize_timestamps(self.timestamps)
-        self.actor_comparison = dict(self.actor_comparison or {})
-        self.baseline_actor_id = (self.baseline_actor_id or "").strip()
-        self.comparison_actor_id = (self.comparison_actor_id or "").strip()
-        self.authorization_signal = (self.authorization_signal or "").strip().lower()
-        self.auth_state = dict(self.auth_state or {})
-        self.actor_ready = bool(self.actor_ready)
-        self.login_performed = bool(self.login_performed)
-        self.refresh_performed = bool(self.refresh_performed)
-        self.refresh_count = max(0, int(self.refresh_count or 0))
-        self.auth_evidence = dict(self.auth_evidence or {})
-        self.session_expiry_state = (self.session_expiry_state or "").strip().lower()
-        self.policy_source = (self.policy_source or "").strip()
-        self.expected_access = dict(self.expected_access or {})
-        self.observed_access = dict(self.observed_access or {})
-        self.policy_verdict = (self.policy_verdict or "").strip().lower()
-        self.ownership_context = dict(self.ownership_context or {})
-        self.deterministic_verification = bool(self.deterministic_verification)
-        self.actor_scope = [str(item) for item in (self.actor_scope or []) if str(item).strip()]
-        self.browser_login_used = bool(self.browser_login_used)
-        self.session_origin = (self.session_origin or "").strip().lower()
-        self.workflow_id = (self.workflow_id or "").strip()
-        self.workflow_execution_id = (self.workflow_execution_id or "").strip()
-        self.workflow_step_ids = [str(item) for item in (self.workflow_step_ids or []) if str(item).strip()]
-        self.workflow_checkpoint_results = [dict(item) for item in (self.workflow_checkpoint_results or []) if item]
-        self.workflow_status = (self.workflow_status or "").strip().lower()
-        self.workflow_replay_status = (self.workflow_replay_status or "").strip().lower()
-        self.verification_basis = (self.verification_basis or "").strip().lower()
-        self.artifact_refs = [dict(item) for item in (self.artifact_refs or []) if item]
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+        if not self.finding_id:
+            fingerprint = ":".join(
+                [
+                    self.plugin,
+                    self.type,
+                    self.url,
+                    self.surface_id,
+                    str(self.target.get("parameter", "")),
+                    str(self.target.get("method", "")),
+                ]
+            )
+            self.finding_id = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
 
-        if self.verification_status in {"verified", "detected", "suspected"} and not self.evidence:
-            self.verification_status = "informational"
-            self.confidence = "LOW"
-            self.notes.append("Downgraded because no evidence was captured.")
-        if self.verification_status == "verified" and not self.reproducible:
-            self.verification_status = "detected"
-            self.confidence = "MEDIUM" if self.confidence == "HIGH" else self.confidence
-            self.notes.append("Downgraded because the condition was not marked reproducible.")
-        if self.category == "access-control" and self.verification_status == "verified":
-            has_actor_pair = bool(self.baseline_actor_id and self.comparison_actor_id)
-            has_actor_evidence = bool(self.actor_comparison or self.evidence.get("auth"))
-            actor_states = self.auth_state.get("actors", {}) if isinstance(self.auth_state, dict) else {}
-            degraded_auth = any(
-                str((state or {}).get("session_status", "")).strip().lower() in {"expired", "refresh_failed", "login_failed", "degraded"}
-                or not bool((state or {}).get("actor_ready", False))
-                for state in actor_states.values()
-            ) if actor_states else not self.actor_ready
-            if not has_actor_pair or not has_actor_evidence or degraded_auth:
-                self.verification_status = "suspected"
-                self.confidence = "LOW"
-                self.reproducible = False
-                self.notes.append("Downgraded because verified access-control findings require cross-actor evidence and ready authenticated actors.")
-        if self.policy_verdict == "violates_policy_verified" and not self.deterministic_verification:
-            self.policy_verdict = "indeterminate"
-            self.verification_status = "suspected"
-            self.confidence = "LOW"
-            self.notes.append("Downgraded because policy-backed verified findings require deterministic verification.")
-        if self.scanner_mode == "workflow" and self.verification_status == "verified":
-            workflow_ready = bool(self.workflow_id and self.workflow_execution_id and self.workflow_step_ids and self.workflow_checkpoint_results)
-            workflow_complete = self.workflow_status not in {"partial", "failed", "indeterminate", "blocked_auth"}
-            workflow_basis_ok = self.verification_basis in {"policy-backed", "proof-backed"}
-            if not workflow_ready or not workflow_complete or not workflow_basis_ok:
-                self.verification_status = "suspected"
-                self.confidence = "LOW"
-                self.reproducible = False
-                self.notes.append("Downgraded because verified workflow findings require step-level checkpoint evidence, a completed workflow state, and a non-heuristic verification basis.")
+    @property
+    def verified(self) -> bool:
+        return self.verification_status == "verified"
 
-        param_name = self.reproduction.get("param") or self.evidence.get("param") or ""
-        fingerprint = f"{self.plugin}:{self.type}:{self.url}:{self.surface_id}:{param_name}:{self.workflow_id}:{','.join(self.workflow_step_ids)}"
-        self.fingerprint = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
-        self.id = self.fingerprint
-
-    def _normalize_target(self, value: Dict[str, Any]) -> Dict[str, Any]:
-        target = dict(value or {})
-        parsed = urlparse(self.url or "")
-        target.setdefault("url", self.url)
-        target.setdefault("host", parsed.netloc or parsed.hostname or "")
-        target.setdefault("path", parsed.path or "/")
-        if self.surface_id:
-            target.setdefault("surface_id", self.surface_id)
-        param_name = self.reproduction.get("param") or self.evidence.get("param")
-        if param_name:
-            target.setdefault("parameter", param_name)
-        return target
-
-    def _normalize_timestamps(self, value: Dict[str, str]) -> Dict[str, str]:
-        timestamps = dict(value or {})
-        now = datetime.now(timezone.utc).isoformat()
-        timestamps.setdefault("first_seen", now)
-        timestamps.setdefault("last_seen", timestamps["first_seen"])
-        return timestamps
+    def to_dict(self):
+        return asdict(self)
 
 
 @dataclass
-class ArtifactReference:
-    artifact_id: str
-    kind: str
-    path: str
-    actor_id: str = ""
-    finding_id: str = ""
-    workflow_id: str = ""
-    execution_id: str = ""
-    step_id: str = ""
-    checkpoint_id: str = ""
-    replay_id: str = ""
-    artifact_role: str = ""
-    description: str = ""
+class ScanReport:
+    target: str
+    findings: List[Finding] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    schema_version: str = "webvulnscanner/1.3"
+    generated_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
+    def summary(self) -> Dict[str, Any]:
+        by_severity: Dict[str, int] = {}
+        by_verification: Dict[str, int] = {}
+        by_plugin: Dict[str, int] = {}
+        by_category: Dict[str, int] = {}
+        for finding in self.findings:
+            by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
+            by_verification[finding.verification_status] = (
+                by_verification.get(finding.verification_status, 0) + 1
+            )
+            by_plugin[finding.plugin] = by_plugin.get(finding.plugin, 0) + 1
+            by_category[finding.category] = by_category.get(finding.category, 0) + 1
+        return {
+            "findings_total": len(self.findings),
+            "by_severity": by_severity,
+            "by_verification": by_verification,
+            "by_plugin": by_plugin,
+            "by_category": by_category,
+        }
 
-@dataclass
-class ScanEvent:
-    event_id: str
-    kind: str
-    timestamp: str
-    payload: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class RequestRecord:
-    fingerprint: str
-    method: str
-    url: str
-    actor_id: str = ""
-    source: str = ""
-    params: Dict[str, Any] = field(default_factory=dict)
-    headers: Dict[str, Any] = field(default_factory=dict)
-    replay_of: str = ""
-
-
-@dataclass
-class ResponseRecord:
-    fingerprint: str
-    status_code: int
-    actor_id: str = ""
-    url: str = ""
-    content_length: int = 0
-    headers: Dict[str, Any] = field(default_factory=dict)
-    excerpt: str = ""
-
-
-@dataclass
-class BrowserActionRecord:
-    action: str
-    url: str
-    actor_id: str = ""
-    details: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class VerificationRecord:
-    scenario_id: str
-    verifier: str
-    decision: str
-    actor_scope: List[str] = field(default_factory=list)
-    evidence: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class PolicyDecisionRecord:
-    scenario_id: str
-    policy_id: str
-    verdict: str
-    expected_access: Dict[str, Any] = field(default_factory=dict)
-    observed_access: Dict[str, Any] = field(default_factory=dict)
-    actor_scope: List[str] = field(default_factory=list)
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "generated_at": self.generated_at,
+            "target": self.target,
+            "summary": self.summary(),
+            "metadata": self.metadata,
+            "findings": [finding.to_dict() for finding in self.findings],
+        }
