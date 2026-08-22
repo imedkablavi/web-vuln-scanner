@@ -26,6 +26,7 @@ _SCANNER_KEYS = {
     "passive_checks",
     "active_checks",
     "attack_policy",
+    "checkpoint",
     "verified_only",
     "max_findings_per_plugin",
     "request",
@@ -253,6 +254,25 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             raise ValueError(
                 f"scanner.attack_policy.skip_parameter_patterns contains invalid regex {pattern!r}: {exc}"
             ) from exc
+
+    checkpoint = _mapping(
+        scanner.get("checkpoint", {}),
+        "scanner.checkpoint",
+    )
+    for key in ("enabled", "resume", "keep_completed"):
+        if key in checkpoint and not isinstance(checkpoint[key], bool):
+            raise ValueError(f"scanner.checkpoint.{key} must be boolean")
+    if "path" in checkpoint and not isinstance(checkpoint["path"], str):
+        raise ValueError("scanner.checkpoint.path must be a string")
+    if "flush_every" in checkpoint:
+        _positive_int(
+            checkpoint["flush_every"],
+            "scanner.checkpoint.flush_every",
+        )
+    if checkpoint.get("resume", False) and not checkpoint.get("enabled", False):
+        raise ValueError("scanner.checkpoint.resume requires scanner.checkpoint.enabled=true")
+    if checkpoint.get("enabled", False) and not str(checkpoint.get("path", "") or "").strip():
+        raise ValueError("scanner.checkpoint.path is required when checkpointing is enabled")
 
     passive_checks = _mapping(
         scanner.get("passive_checks", {}),
