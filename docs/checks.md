@@ -14,9 +14,33 @@ This page describes what a check must observe before it writes a finding. The di
 | CRLF / response-header injection | safe-active | a unique canary appears as a separate response header | no cache-poisoning or response-splitting follow-up |
 | TRACE reflection | safe-active | a successful TRACE response reflects a unique request header | checked once per origin |
 | Same-origin URL fetch behavior | safe-active | a URL-like parameter causes the response to become strongly similar to a directly fetched page on the same authorized origin | does not target private IPs, metadata services, or external callbacks; does not claim internal-network SSRF |
+| Safe YAML templates | safe-active | the configured status/word/header matcher set is satisfied on a same-origin GET/HEAD response | no raw HTTP, DSL/eval, redirects, callbacks, or non-GET/HEAD methods |
 | Business logic / access control | safe-active | response variance is a signal; verified status requires actor/RBAC evidence | requires suitable test identities for strong conclusions |
 
-The safe-active profile has separate limits for URLs, parameters per URL, and active HTTP requests. Reaching the request budget stops new active web probes and is recorded in scan metadata.
+The safe-active profile has separate limits for URLs, parameters per URL, active web requests, and safe-template requests. Reaching a request budget stops new work in that layer and is recorded in scan metadata.
+
+## Safe YAML template checks
+
+The template engine exists to make conservative exposure/misconfiguration checks extensible without embedding arbitrary execution in the scanner. Packaged checks currently cover strong markers for:
+
+- PHP `phpinfo()` exposure;
+- Apache `server-status` exposure;
+- Nginx `stub_status` exposure;
+- Go `/debug/vars` expvar exposure.
+
+A template is rejected unless it stays within the release schema:
+
+- request method must be `GET` or `HEAD`;
+- request path must be one absolute same-origin path;
+- redirects are never followed;
+- template variables, DSL expressions, raw HTTP, command execution, and callback behavior are unsupported;
+- matchers are limited to HTTP status, words in body/headers, and named response headers;
+- matcher/value counts and body bytes are bounded;
+- the final URL still passes the centralized scope policy.
+
+Built-ins are enabled by `safe-active` and `full-authorized` with separate hard request/template budgets. They are disabled by `passive`. Custom templates can be loaded from `scanner.active_checks.templates.directory` or `.files`; relative paths are resolved relative to the user configuration file.
+
+A safe-template match is reported as `detected`: it proves that the declared response condition exists, not that a broader exploit chain is possible.
 
 ## Browser XSS confirmation
 
@@ -44,7 +68,7 @@ The cache check does not report a missing `Cache-Control` header by itself. It r
 
 JWT review is local only. Tokens are decoded for header/claim metadata, but the scanner does not modify, re-sign, brute-force, or replay a changed JWT. Raw token values and subject values are not written to findings.
 
-The passive profile does not send the injection payloads listed in the active table.
+The passive profile does not send the injection payloads or safe-template requests listed in the active sections.
 
 ## XML parser probe
 
@@ -71,7 +95,7 @@ The reporter uses verification status deliberately:
 - `detected`: the stated condition was observed, but exploitability was not proven;
 - `verified`: the check met its stronger reproducibility or execution rule.
 
-Examples: same-origin URL-fetch behavior is `detected`, not verified internal-network SSRF. Internal DTD entity expansion is `detected`, not verified XXE data exfiltration. Browser-confirmed reflected XSS can be `verified` because the marker was produced by actual browser execution.
+Examples: same-origin URL-fetch behavior is `detected`, not verified internal-network SSRF. Internal DTD entity expansion is `detected`, not verified XXE data exfiltration. A safe-template match is `detected`. Browser-confirmed reflected XSS can be `verified` because the marker was produced by actual browser execution.
 
 ## Mappings
 
