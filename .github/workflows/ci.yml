@@ -63,6 +63,8 @@ jobs:
           web-vuln-sarif --help
           web-vuln-diff --help
           web-vuln-har --help
+          web-vuln-postman --help
+          web-vuln-wsdl --help
 
   dependency-audit:
     name: Dependency audit and SBOM
@@ -119,6 +121,8 @@ jobs:
           /tmp/wheel-test/bin/web-vuln-sarif --help
           /tmp/wheel-test/bin/web-vuln-diff --help
           /tmp/wheel-test/bin/web-vuln-har --help
+          /tmp/wheel-test/bin/web-vuln-postman --help
+          /tmp/wheel-test/bin/web-vuln-wsdl --help
       - name: Verify packaged runtime resources
         run: |
           cd /tmp
