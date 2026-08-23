@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-web-vuln-scanner = "main_v2:app"
+web-vuln-scanner = "core.cli:main"
 web-vuln-sarif = "core.sarif:main"
 web-vuln-profile = "core.scan_profiles:main"
 
@@ -55,8 +55,11 @@ py-modules = ["main_v2"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "layers*", "plugins*", "policies*", "workflows*"]
+include = ["config*", "core*", "layers*", "plugins*", "policies*", "workflows*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+config = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
