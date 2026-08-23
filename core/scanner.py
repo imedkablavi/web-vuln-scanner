@@ -22,20 +22,37 @@ class PluginRegistry:
         "cmd_injection": CMDInjectionPlugin,
         "open_redirect": OpenRedirectPlugin,
     }
+    experimental = {"xss_reflected", "lfi", "cmd_injection", "open_redirect"}
 
     @classmethod
     def load_plugins(cls, config, request_manager) -> List[BasePlugin]:
         plugins = []
         requested = config.get("plugins", {})
-        unstable = {"xss_reflected", "lfi", "cmd_injection", "open_redirect"}
+        allow_experimental = bool(config.get("allow_experimental_plugins", False))
+        scope = config.get("scope", {}) or {}
+        explicit_scope = bool(scope.get("include_domains") or scope.get("allowlist"))
+
         for name, cfg in requested.items():
             cfg_obj = cfg if isinstance(cfg, dict) else {"enabled": bool(cfg)}
             plugin_cls = cls.available.get(name)
             if not plugin_cls:
                 continue
-            if name in unstable and cfg_obj.get("enabled"):
-                logger.warning(f"Plugin '{name}' is disabled (incomplete/unstable). Skipping.")
-                continue
+            if name in cls.experimental and cfg_obj.get("enabled"):
+                if not allow_experimental:
+                    logger.warning(
+                        f"Plugin '{name}' is experimental and requires allow_experimental_plugins=true. Skipping."
+                    )
+                    continue
+                if not explicit_scope:
+                    logger.warning(
+                        f"Plugin '{name}' requires an explicit scope include_domains/allowlist. Skipping."
+                    )
+                    continue
+                if name == "cmd_injection" and not bool(cfg_obj.get("allow_command_probe", False)):
+                    logger.warning(
+                        "Plugin 'cmd_injection' also requires allow_command_probe=true because it sends a bounded shell marker. Skipping."
+                    )
+                    continue
             if plugin_cls.enabled(cfg_obj):
                 plugins.append(plugin_cls(request_manager, cfg_obj))
         return plugins
