@@ -87,6 +87,14 @@ jobs:
           python -m pip install -r requirements.txt
       - name: Local smoke target
         run: python smoke/run_smoke.py
+      - name: Capture failed smoke report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-failure-report
+          path: smoke_out/scan_report.json
+          if-no-files-found: warn
+          retention-days: 3
       - name: Convert smoke report to SARIF
         run: python -m core.sarif smoke_out/scan_report.json --output smoke_out/scan_report.sarif
       - name: Validate smoke outputs contain no obvious fixture secrets
