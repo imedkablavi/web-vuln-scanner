@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web Vulnerability Scanner - Example Report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #f7f7f8; color: #171717; }
+    .card { max-width: 980px; margin: auto; background: white; border: 1px solid #ddd; border-radius: 12px; padding: 1.5rem; }
+    .meta { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: .75rem; margin-bottom: 1.5rem; }
+    .pill { border: 1px solid #ddd; border-radius: 999px; padding: .4rem .7rem; display: inline-block; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ddd; padding: .65rem; text-align: left; vertical-align: top; }
+    th { background: #f1f1f1; }
+    code, pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Example security scan report</h1>
+    <p>This committed example is generated from a local synthetic regression target. It is not a real-world scan.</p>
+    <div class="meta">
+      <div><strong>Target</strong><br>127.0.0.1 local test</div>
+      <div><strong>Status</strong><br>completed</div>
+      <div><strong>Findings</strong><br>1</div>
+      <div><strong>Plugin</strong><br>sqli</div>
+    </div>
+    <p><span class="pill">HIGH</span> <span class="pill">detected</span> <span class="pill">HIGH confidence</span></p>
+    <table>
+      <thead><tr><th>Finding</th><th>Evidence</th><th>Remediation</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>SQL Injection Signal</strong><br><code>/sqli?id=1</code></td>
+          <td><pre>{
+  "signal": "sql_error_pattern",
+  "status": 200,
+  "response_excerpt": "SQL syntax error near quoted input"
+}</pre></td>
+          <td>Use parameterized queries/ORM bindings and validate inputs.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Authentication material is redacted from committed and generated examples.</p>
+  </main>
+</body>
+</html>
