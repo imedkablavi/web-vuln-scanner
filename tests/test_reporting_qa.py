@@ -5,7 +5,7 @@ import json
 from core.models import Finding
 from core.reporter import Reporter
 from core.sarif import convert_report
-from core.utils import redact_text, sanitize_config
+from core.utils import redact_text, sanitize_config, setup_logger
 
 
 def _config(tmp_path):
@@ -111,3 +111,12 @@ def test_config_redaction_is_recursive():
     assert redacted["scanner"]["auth"]["headers"]["Authorization"] == "***redacted***"
     assert redacted["scanner"]["nested"]["api_key"] == "***redacted***"
     assert redacted["scanner"]["nested"]["safe"] == "value"
+
+
+def test_logger_falls_back_to_stream_when_file_handler_cannot_open(monkeypatch):
+    def fail_file_handler(*args, **kwargs):
+        raise PermissionError("synthetic read-only working directory")
+
+    monkeypatch.setattr("core.utils.logging.FileHandler", fail_file_handler)
+    configured = setup_logger(log_file="/synthetic-read-only/scanner.log")
+    assert configured.name == "WebVulnScanner"
