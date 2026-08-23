@@ -183,9 +183,9 @@ class ScannerEngine:
                             break
                         try:
                             plugin.validate_testcase(tc, surface)
-                            resp = self.requester.send_surface(surface, tc.param, tc.payload)
                             requests_used += 1
                             dbg["executed_requests"] += 1
+                            resp = self.requester.send_surface(surface, tc.param, tc.payload)
                             if resp is not None and dbg["first_response"] is None:
                                 dbg["first_response"] = {
                                     "status": getattr(resp, "status_code", None),
