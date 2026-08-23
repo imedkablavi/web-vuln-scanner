@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from core.models import AttackSurface
+from core.models import AttackSurface, InputField
+from core.plugin_request import send_plugin_test
 from core.request_manager import RequestManager
 from layers.active_web_probes import ActiveWebProbeScanner
 from layers.browser_xss import BrowserXSSVerifier
 from layers.xml_checks import XMLParserProbeScanner
+from plugins.base import TestCase
 
 
 ROOT_BODY = (
@@ -55,11 +58,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         parsed = urlparse(self.path)
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
+
+        if parsed.path == "/nested":
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                self._send(400, "invalid json", "text/plain")
+                return
+            self.server.nested_requests.append(
+                {
+                    "query": parse_qs(parsed.query, keep_blank_values=True),
+                    "payload": payload,
+                }
+            )
+            self._send(200, json.dumps({"ok": True}), "application/json")
+            return
+
         if parsed.path != "/xml":
             self._send(404, "not found", "text/plain")
             return
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        body = self.rfile.read(length).decode("utf-8", errors="replace")
         match = re.search(r'<!ENTITY\s+wvs_probe\s+"([^"]+)">', body)
         if not match:
             self._send(400, "invalid xml", "text/plain")
@@ -127,6 +146,7 @@ def config(port: int):
 
 def main() -> int:
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.nested_requests = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address
@@ -179,6 +199,63 @@ def main() -> int:
         ):
             raise SystemExit(f"browser XSS smoke failed: {browser_meta}")
 
+        nested_surface = AttackSurface(
+            url=f"{origin}/nested",
+            method="POST",
+            params={"mode": "edit"},
+            inputs=[
+                InputField(name="mode", value="edit", kind="query", path="mode"),
+                InputField(name="id", value=7, kind="body", path="/owner/id", data_type="integer"),
+                InputField(name="id", value=11, kind="body", path="/reviewer/id", data_type="integer"),
+                InputField(name="enabled", value=False, kind="body", path="/settings/enabled", data_type="boolean"),
+            ],
+            source="smoke",
+            meta={
+                "content_type": "application/json",
+                "body_format": "json",
+                "active_eligible": True,
+            },
+        )
+        requester.send_surface(nested_surface)
+        send_plugin_test(
+            requester,
+            nested_surface,
+            TestCase(
+                plugin="smoke",
+                surface_id=nested_surface.id,
+                param="id",
+                kind="body",
+                payload="CANARY",
+                input_path="/reviewer/id",
+            ),
+        )
+        if len(server.nested_requests) != 2:
+            raise SystemExit(
+                f"nested JSON wire smoke expected 2 requests, got {len(server.nested_requests)}"
+            )
+        baseline_nested, candidate_nested = server.nested_requests
+        expected_query = {"mode": ["edit"]}
+        if baseline_nested["query"] != expected_query or candidate_nested["query"] != expected_query:
+            raise SystemExit(
+                f"nested JSON wire smoke lost POST query parameters: {server.nested_requests}"
+            )
+        if baseline_nested["payload"] != {
+            "owner": {"id": 7},
+            "reviewer": {"id": 11},
+            "settings": {"enabled": False},
+        }:
+            raise SystemExit(
+                f"nested JSON baseline wire shape mismatch: {baseline_nested['payload']}"
+            )
+        if candidate_nested["payload"] != {
+            "owner": {"id": 7},
+            "reviewer": {"id": "CANARY"},
+            "settings": {"enabled": False},
+        }:
+            raise SystemExit(
+                f"nested JSON candidate wire shape mismatch: {candidate_nested['payload']}"
+            )
+
         xml_surface = AttackSurface(
             url=f"{origin}/xml",
             method="POST",
@@ -197,7 +274,7 @@ def main() -> int:
             raise SystemExit(f"XML parser smoke failed: {xml_meta}")
 
         print(
-            "Feature probe smoke successful: same-origin URL fetch, browser XSS, internal XML entity."
+            "Feature probe smoke successful: same-origin URL fetch, browser XSS, nested JSON wire parity, internal XML entity."
         )
         return 0
     finally:
