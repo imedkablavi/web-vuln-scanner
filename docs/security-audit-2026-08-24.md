@@ -82,6 +82,8 @@ Regression tests assert that configuration alone cannot enable these plugins. Pr
 - uploads Python distributions as workflow artifacts;
 - builds the Docker image and runs a container CLI smoke test.
 
+The first release-QA pass found two concrete packaging defects: the wheel omitted the `policies` package, and the non-root container could not create `/app/scanner.log`. The wheel/package-data configuration now includes required runtime packages/resources, and logging keeps stderr available when a file destination is not writable rather than weakening container permissions.
+
 Publishing is deliberately not performed from pull-request validation.
 
 ### 7. Concurrency and rate-limit behavior lacked regression assertions
@@ -100,7 +102,7 @@ These tests use synthetic/fake transports or local loopback only.
 
 ### 8. Public repository metadata was incomplete
 
-**Remediation completed in code:** added MIT `LICENSE`, package license classifier and project URLs.
+**Remediation completed in code:** added MIT `LICENSE`, package license metadata and project URLs.
 
 **Repository-setting work still requires GitHub Settings:** description, topics and social preview cannot be changed by the repository-content workflow used for this audit. Recommended exact values are in `docs/repository-metadata.md`.
 
@@ -141,6 +143,18 @@ The new regression suite covers:
 | SARIF | local smoke JSON converts to SARIF 2.1.0 |
 | Packaging | wheel/sdist and Docker CLI are release-smoke tested |
 
+## Final CI verification
+
+The hardening branch reached a fully green verification pass before this report was finalized:
+
+- `CI`: Python 3.10, 3.11 and 3.12 compile/lint/unit/helper-CLI jobs passed.
+- `CI / smoke`: Playwright Chromium was provisioned explicitly; the local browser/auth/RBAC/workflow smoke passed and converted its report to SARIF.
+- `Security Regression`: contract, FP/FN, authenticated session, scope, redaction, rate-limit, local browser smoke, SARIF and local-only manifest assertions all passed.
+- `Release QA / python-package`: sdist/wheel build, `twine check`, clean wheel install, installed CLI/profile smoke and distribution artifact upload passed.
+- `Release QA / docker-package`: image build and non-root container CLI smoke passed.
+
+Browser installation is now explicit in smoke workflows so browser-auth regression coverage cannot silently depend on runner state.
+
 ## Experimental maturity decision
 
 No experimental plugin was promoted during this audit.
@@ -158,4 +172,4 @@ No experimental plugin was promoted during this audit.
 
 ## Release decision
 
-This branch is intended as a hardening/QA change, not an assertion that every scanner detector is production-grade. Stable/experimental claims should continue to follow tested evidence rather than feature presence.
+This branch is suitable for review as a security-tool hardening/QA change. It does not assert that every detector is production-grade; stable/experimental claims continue to follow tested evidence rather than feature presence.
