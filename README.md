@@ -1,28 +1,33 @@
 # Web Vulnerability Scanner
 
-Evidence-first command-line scanner for **authorized** web targets.
+Evidence-first command-line scanner for **authorized** web security testing.
 
-It crawls in-scope pages, inspects forms and query parameters, checks common web posture issues, looks for exposed files, inspects Swagger/GraphQL endpoints, records DNS/TLS details, runs bounded SQLi checks, and can verify access-control behavior when authorized actor accounts are configured.
+![Sanitized local report preview](docs/report-preview.svg)
+
+The scanner is designed around bounded requests, explicit scope controls, reproducible evidence, and conservative verification labels. CI security targets are local/synthetic only; the project does not ship mass-exploitation workflows or unsafe defaults.
 
 ## Highlights
 
-- HTTP crawler with strict scope controls and bounded concurrency.
+- HTTP crawler with scope/SSRF guards and bounded per-host concurrency.
 - Optional Playwright-assisted discovery and authenticated browser flows.
 - Passive web posture checks: security headers, cookies, CORS, redirects, and verbose errors.
 - Bounded exposure checks for common backup/debug/config paths.
 - Swagger/OpenAPI and GraphQL discovery.
 - DNS and TLS inventory.
-- Active SQLi and business-logic/access-control checks.
-- Auth-aware actor comparison, RBAC verification, replay artifacts, and workflow scenarios.
-- JSON and HTML reports, plus SARIF 2.1.0 conversion for security tooling.
-- Conservative scan profiles for passive and authorized testing modes.
-- CI across Python 3.10, 3.11, and 3.12.
+- Stable active checks for SQLi and auth-aware business-logic/access-control behavior.
+- Actor sessions, RBAC verification, replay artifacts, and workflow scenarios for authorized test accounts.
+- JSON and HTML reports plus SARIF 2.1.0 conversion.
+- Plugin execution contracts for request budgets, per-surface deadlines, testcase validation, and evidence schema validation.
+- Local intentionally vulnerable regression corpus for false-positive/false-negative, auth, cookie, scope, rate-limit, and concurrency QA.
+- Wheel/sdist, Docker, clean-install, checksum, and release validation in GitHub Actions.
 
 ## Authorization and Safety
 
 Use this project only on systems you own or have explicit permission to test.
 
-The default configuration is intentionally bounded. Experimental plugins remain disabled by the registry and are not enabled automatically by any scan profile. Authentication checks require test credentials supplied through configuration/environment variables.
+The default configuration is intentionally bounded. Experimental plugins remain disabled by the registry even when configuration attempts to enable them. No scan profile promotes them automatically. Authentication checks require credentials supplied explicitly by the operator.
+
+CI never scans public targets. Regression and benchmark jobs use only the bundled localhost synthetic corpus.
 
 ## Installation
 
@@ -44,20 +49,20 @@ macOS / Linux:
 source .venv/bin/activate
 ```
 
-Install the project for normal HTTP scanning:
+Install the project:
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-For development:
+Development dependencies:
 
 ```bash
 python -m pip install -e .[dev]
 ```
 
-For browser-assisted scanning:
+Browser-assisted scanning:
 
 ```bash
 python -m pip install -e .[browser]
@@ -68,13 +73,17 @@ The legacy `requirements.txt` workflow remains available for compatibility.
 
 ## Quick Local Check
 
-The bundled mock target exercises the scanner without contacting a third-party system:
+The bundled smoke target exercises the scanner without contacting a third-party system:
 
 ```bash
 python smoke/run_smoke.py
 ```
 
-It starts a local mock server, runs a scan, and writes reports to `smoke_out/`.
+The dedicated regression corpus is exercised by pytest and CI:
+
+```bash
+python -m pytest -q tests/test_security_regression.py tests/test_reporting_qa.py tests/test_concurrency.py
+```
 
 ## Run a Scan
 
@@ -104,7 +113,7 @@ web-vuln-scanner https://target.tld \
 
 ## Scan Profiles
 
-Profiles are materialized into a normal YAML configuration, so the scanner keeps one configuration contract and profiles remain easy to audit.
+Profiles are materialized into normal YAML so there is one auditable configuration contract.
 
 Passive posture assessment:
 
@@ -128,14 +137,41 @@ web-vuln-profile full-authorized --config config/default_config.yaml --output co
 Available profiles:
 
 - `passive` — crawler plus passive/posture layers; active plugins disabled.
-- `safe-active` — enables stable bounded SQLi and business-logic checks; experimental plugins stay disabled.
-- `full-authorized` — browser-capable authorized baseline with stable plugins; credentials/workflows are still explicitly configured by the operator.
+- `safe-active` — stable bounded SQLi and business-logic checks; experimental plugins stay disabled.
+- `full-authorized` — browser-capable authorized baseline with stable plugins; credentials/workflows still require explicit configuration.
+
+## Plugin Contract
+
+Active plugins use the shared `RequestManager`; plugins must not create ad-hoc HTTP clients.
+
+Each plugin is constrained per attack surface by:
+
+- `max_tests_per_surface` — caps generated testcases;
+- `request_budget` — caps active plugin requests;
+- `timeout_seconds` — cooperative per-surface execution deadline;
+- testcase validation — plugin name, surface id, input kind, parameter, and payload are checked before dispatch;
+- evidence validation — reportable results must provide the `webvulnscanner/evidence-v1` contract, evidence, and reproduction metadata.
+
+A contract violation is recorded as an execution error and does not become a finding.
+
+## Plugin Maturity
+
+| Plugin | Maturity | Default | Promotion status |
+| --- | --- | --- | --- |
+| `sqli` | stable | enabled | local positive/negative regression covered |
+| `business_logic` | stable | enabled | auth/RBAC verification path retained |
+| `xss_reflected` | experimental | disabled | blocked pending dedicated quality proof |
+| `lfi` | experimental | disabled | blocked pending dedicated quality proof |
+| `cmd_injection` | experimental | disabled | blocked pending dedicated quality proof |
+| `open_redirect` | experimental | disabled | blocked pending dedicated quality proof |
+
+Experimental code is not promoted merely because an implementation exists. Promotion requires dedicated local positive/negative fixtures, false-positive review, scope/budget compliance, evidence quality, and regression coverage.
 
 ## Reports
 
 A scan produces:
 
-- `scan_report.json` — complete machine-readable report.
+- `scan_report.json` — machine-readable report;
 - `scan_report.html` — human-readable evidence report.
 
 Convert JSON to SARIF 2.1.0:
@@ -144,31 +180,34 @@ Convert JSON to SARIF 2.1.0:
 web-vuln-sarif reports/scan_report.json --output reports/scan_report.sarif
 ```
 
-or:
+Committed sanitized examples:
+
+- [`docs/example-report.json`](docs/example-report.json)
+- [`docs/example-report.html`](docs/example-report.html)
+
+Report QA covers JSON structure, HTML URL handling, sensitive-key redaction, and SARIF conversion. Authentication material should never be committed to fixtures or example reports.
+
+## Security Regression Corpus
+
+`tests/local_corpus.py` starts a localhost `ThreadingHTTPServer` with intentionally synthetic behavior used only by automated tests. It includes:
+
+- known SQL-error positive signal;
+- constant safe endpoint for false-positive regression;
+- cookie-authenticated user/admin endpoints;
+- bounded 429 + `Retry-After` behavior;
+- reserved synthetic endpoints for experimental plugins that remain disabled.
+
+The corpus is not a deployable vulnerable application and is not used against remote hosts.
+
+## Performance and Rate Limits
+
+Deterministic tests verify `per_host_concurrency` is never exceeded. The local benchmark runs:
 
 ```bash
-python -m core.sarif reports/scan_report.json
+python scripts/benchmark_local.py
 ```
 
-SARIF results preserve severity, confidence, verification status, category, plugin, scanner mode, target URL, and remediation metadata.
-
-## Plugin Maturity
-
-Plugin metadata lives in `core/plugin_catalog.py` and records maturity, activity type, CWE references, and OWASP mappings.
-
-Stable plugins:
-
-- `sqli`
-- `business_logic`
-
-Experimental plugins currently blocked by the registry:
-
-- `xss_reflected`
-- `lfi`
-- `cmd_injection`
-- `open_redirect`
-
-Experimental code must pass dedicated positive/negative tests and verification-quality review before promotion.
+It writes `benchmark_out/local-performance.json` with local-only throughput and latency (mean/p50/p95/max). CI logs this result for each change without treating runner-specific numbers as universal performance claims.
 
 ## Exit Codes
 
@@ -179,28 +218,46 @@ Experimental code must pass dedicated positive/negative tests and verification-q
 
 ## Tests
 
+Full suite:
+
 ```bash
-python -m pytest
+python -m pytest -q
 ```
 
-Critical static checks used by CI:
+Critical static checks:
 
 ```bash
 ruff check . --select E9,F63,F7,F82
-python -m compileall -q core layers plugins workflows smoke main_v2.py
+python -m compileall -q core layers plugins workflows smoke scripts tests main_v2.py
 ```
 
-The smoke harness is also executed in CI, and its JSON report is converted to SARIF to validate the reporting pipeline.
+GitHub Actions additionally validates the localhost smoke corpus, report-to-SARIF conversion, clean wheel installation, Docker CLI startup, and local performance/concurrency behavior.
 
-## Container
+## Packaging and Releases
 
-The Docker image is aligned with Playwright 1.62 and runs the scanner as the non-root `pwuser` supplied by the Playwright image.
+Build Python artifacts locally:
+
+```bash
+python -m pip install build twine
+python -m build
+python -m twine check dist/*
+```
+
+Docker:
 
 ```bash
 docker build -t web-vuln-scanner .
 docker run --rm web-vuln-scanner --help
 ```
 
+The release workflow creates wheel/sdist artifacts and SHA256 checksums for `v*` tags. PyPI publishing is opt-in only through the `pypi` GitHub environment and Trusted Publishing; it is not enabled by default.
+
+## Repository Metadata
+
+The project is licensed under Apache-2.0. Canonical description/topics and the social-preview candidate are tracked in [`.github/repository-metadata.yml`](.github/repository-metadata.yml) so repository settings can be reviewed in code.
+
 ## Contributing
 
-See `CONTRIBUTING.md` before adding scanners or plugins. New checks should be bounded, scope-aware, evidence-driven, false-positive conscious, and tested against local fixtures.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). New checks must be bounded, scope-aware, evidence-driven, false-positive conscious, and covered by local/synthetic fixtures. CI changes must not introduce remote scanning targets.
+
+For project security policy and responsible-use boundaries, see [`SECURITY.md`](SECURITY.md).
