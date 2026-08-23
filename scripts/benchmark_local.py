@@ -3,8 +3,15 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import statistics
+import sys
 import time
 from pathlib import Path
+
+# Keep the documented `python scripts/benchmark_local.py` form working while
+# CI may also invoke this helper as a module. This only adjusts local imports.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from core.request_manager import RequestManager
 from tests.local_corpus import run_regression_corpus
