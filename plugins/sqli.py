@@ -41,10 +41,12 @@ class SQLiPlugin(BasePlugin):
         if item.kind != "body":
             return True
         path = str(getattr(item, "path", "") or "")
-        nested_json = path.startswith("/") and path.count("/") > 1
-        if nested_json and not bool((surface.meta or {}).get("nested_active_supported", False)):
-            return False
-        return True
+        nested = path.startswith("/") and path.count("/") > 1
+        if not nested:
+            return True
+        content_type = str((surface.meta or {}).get("content_type", "") or "").lower()
+        body_format = str((surface.meta or {}).get("body_format", "") or "").lower()
+        return body_format == "json" or content_type.startswith("application/json") or "+json" in content_type
 
     def generate_tests(self, surface: AttackSurface, context: Dict) -> List[TestCase]:
         tests: List[TestCase] = []
