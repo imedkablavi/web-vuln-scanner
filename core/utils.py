@@ -57,7 +57,18 @@ class SecretRedactionFilter(logging.Filter):
 
 # --- Logging Setup ---
 def setup_logger(level="INFO", log_file="scanner.log"):
-    handlers = [logging.FileHandler(log_file), logging.StreamHandler()]
+    """Configure redacted logging without making a writable CWD mandatory."""
+
+    stream_handler = logging.StreamHandler()
+    handlers = [stream_handler]
+    try:
+        handlers.insert(0, logging.FileHandler(log_file))
+    except OSError:
+        # Containers, packaged CLIs, or read-only working directories may not
+        # permit file creation. Logging must fail open to stderr, not crash the
+        # scanner before scope/auth safeguards are initialized.
+        pass
+
     redaction_filter = SecretRedactionFilter()
     for handler in handlers:
         handler.addFilter(redaction_filter)
