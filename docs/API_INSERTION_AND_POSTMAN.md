@@ -21,9 +21,9 @@ The site map persists only structural metadata such as name, location, canonical
 
 `core.request_materializer` builds the transport shape for an `AttackSurface` without performing network I/O. It preserves query parameters on non-GET methods, preserves false/zero values, reconstructs nested JSON from canonical pointers, and can mutate exactly one selected JSON pointer.
 
-Plugin candidate requests use this materializer instead of maintaining a second body/query reconstruction implementation.
+Both scanner baselines and plugin candidate requests consume the same materializer. This removes the earlier flat-baseline/nested-candidate mismatch and makes response comparisons structurally comparable: method, untouched query values, untouched body fields, headers, cookies, and JSON shape remain aligned except for the selected mutation.
 
-Nested JSON remains gated in the stable active plugins until the scanner baseline path is switched to the same materializer. This prevents response comparisons where the baseline is flat but the candidate is nested.
+The regression suite covers duplicate nested leaf names and verifies that `/owner/id` and `/reviewer/id` are independently targetable. The authorized local smoke suite additionally verifies the same behavior over a real HTTP socket, including preservation of a POST query parameter and a boolean `false` value.
 
 ## OpenAPI
 
@@ -42,6 +42,16 @@ OpenAPI 3 server resolution also handles the default `/` server, path/operation 
 
 JSON body paths are retained as canonical pointers. Flat form and multipart fields retain their form field name because their wire representation is not a nested JSON document.
 
+## Active nested JSON checks
+
+Stable SQL injection and reflected-markup checks can target canonical nested JSON body paths when the surface is explicitly modeled as JSON (`application/json`, a `+json` media type, or `body_format: json`).
+
+For example, two fields named `id` at `/owner/id` and `/reviewer/id` generate distinct test cases and distinct differential-cache identities. Mutating one path does not mutate the other.
+
+Nested XML and form-encoded inputs do not inherit JSON-pointer behavior. They remain inactive unless their own wire-format materializer and verification contract supports them. This prevents a discovered structural path from being mistaken for a safely replayable active input.
+
+`active_eligible: false` is enforced centrally by `ScannerEngine` before baseline generation, so inventory-only surfaces cause no active baseline or plugin traffic.
+
 ## Postman Collection v2.x JSON
 
 `web-vuln-postman` imports a Postman Collection v2.x JSON document into a sanitized attack-surface inventory.
@@ -56,7 +66,7 @@ web-vuln-postman collection.json \
 
 The importer:
 
-- never replays collection requests;
+- never replays collection requests during import;
 - enforces the explicit authorized target scope;
 - pins common base-URL variables to the authorized target instead of trusting collection values;
 - removes query values while retaining query names;
@@ -67,7 +77,7 @@ The importer:
 - inventories GraphQL variables without making them active targets;
 - keeps DELETE inactive even when active eligibility is explicitly requested.
 
-State-changing Postman methods are not active-eligible by default.
+State-changing Postman methods are not active-eligible by default. Imported inventory can be merged into the main scan/site-map flow without bypassing the central active-eligibility guard.
 
 ## WSDL 1.1 / SOAP inventory
 
@@ -92,16 +102,8 @@ The importer:
 
 This is discovery/inventory support, not an active SOAP vulnerability scanner. Active XML/SOAP mutation requires a separate request-envelope materializer and verification model before it can be promoted safely.
 
-## Active mutation safety
-
-The request mutation layer can reconstruct and mutate a selected nested JSON pointer without changing same-named fields elsewhere in the body.
-
-Stable plugins do **not** automatically attack nested JSON paths until the scanner baseline request path is proven to consume the same canonical materializer. This is deliberate: a candidate request and its baseline must be structurally equivalent except for the selected mutation, otherwise response differences could become false positives.
-
-Top-level inputs continue to use the existing stable active checks. Nested JSON and WSDL/XSD paths are inventory-visible immediately.
-
 ## Current format scope
 
-Postman Collection v2.x JSON is supported. Postman's current 3.0 collection format is multi-file/YAML based and will be implemented as a separate adapter over the same internal insertion-point model rather than by duplicating scanner logic.
+Postman Collection v2.x JSON is supported. Postman's current 3.0 format uses multiple YAML files such as `*.request.yaml`; a separate adapter is being designed over the same internal insertion-point model rather than by duplicating scanner logic.
 
 WSDL 1.1 SOAP inventory import is implemented. WSDL 2.0 and active SOAP mutation are not claimed as supported.
