@@ -184,6 +184,16 @@ scanner:
       enabled: false
     open_redirect:
       enabled: false
+    ssti:
+      enabled: false
+      max_tests_per_surface: 2
+      request_budget: 2
+      timeout_seconds: 2
+    crlf_injection:
+      enabled: false
+      max_tests_per_surface: 2
+      request_budget: 2
+      timeout_seconds: 2
   output:
     format: ["json", "html"]
     file: "scan_report"
