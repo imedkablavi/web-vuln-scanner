@@ -30,7 +30,10 @@ class PluginRegistry:
         requested = config.get("plugins", {})
         allow_experimental = bool(config.get("allow_experimental_plugins", False))
         scope = config.get("scope", {}) or {}
-        explicit_scope = bool(scope.get("include_domains") or scope.get("allowlist"))
+        # RequestManager currently enforces include_domains at dispatch time. Do
+        # not accept documentation-only allowlist entries as the active-plugin
+        # scope gate until they are wired into the request layer as well.
+        explicit_scope = bool(scope.get("include_domains"))
 
         for name, cfg in requested.items():
             cfg_obj = cfg if isinstance(cfg, dict) else {"enabled": bool(cfg)}
@@ -45,7 +48,7 @@ class PluginRegistry:
                     continue
                 if not explicit_scope:
                     logger.warning(
-                        f"Plugin '{name}' requires an explicit scope include_domains/allowlist. Skipping."
+                        f"Plugin '{name}' requires scope.include_domains because it is enforced by RequestManager. Skipping."
                     )
                     continue
                 if name == "cmd_injection" and not bool(cfg_obj.get("allow_command_probe", False)):
