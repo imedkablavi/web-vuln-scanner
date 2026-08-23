@@ -8,6 +8,7 @@ version = "0.3.0"
 description = "Evidence-first command-line web security scanner for authorized targets"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 authors = [{ name = "imedkablavi" }]
 keywords = ["security", "scanner", "web", "owasp", "vulnerability-assessment"]
 classifiers = [
@@ -15,6 +16,7 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -29,11 +31,18 @@ dependencies = [
   "PyYAML>=6.0,<7",
 ]
 
+[project.urls]
+Homepage = "https://github.com/imedkablavi/web-vuln-scanner"
+Repository = "https://github.com/imedkablavi/web-vuln-scanner"
+Issues = "https://github.com/imedkablavi/web-vuln-scanner/issues"
+
 [project.optional-dependencies]
 browser = ["playwright>=1.62,<2"]
 dev = [
+  "build>=1.2,<2",
   "pytest>=7.4,<10",
   "ruff>=0.6,<1",
+  "twine>=5,<7",
 ]
 
 [project.scripts]
