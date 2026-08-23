@@ -19,9 +19,11 @@ The experimental checks have local positive and negative regression fixtures, bu
 
 Experimental plugins require all of the following:
 
-1. an explicit scope through `scanner.scope.include_domains` or `scanner.scope.allowlist`;
+1. an explicit host scope through `scanner.scope.include_domains` (the host filter enforced by `RequestManager`);
 2. `scanner.allow_experimental_plugins: true`;
 3. the individual plugin's `enabled: true` flag.
+
+`scanner.scope.allowlist` is documented elsewhere as a hostname list, but it is not currently used by `RequestManager` as the dispatch-time host filter. For experimental active checks, `include_domains` is therefore required rather than relying on `allowlist` alone.
 
 Command-injection probing has a second gate: `allow_command_probe: true`.
 
