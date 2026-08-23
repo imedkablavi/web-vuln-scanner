@@ -37,7 +37,7 @@ def _config():
             "plugins": {
                 "sqli": {
                     "enabled": True,
-                    "max_tests_per_surface": 8,
+                    "max_tests_per_surface": 20,
                     "min_length_delta_ratio": 0.05,
                 }
             },
