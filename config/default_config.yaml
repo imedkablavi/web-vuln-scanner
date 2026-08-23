@@ -35,6 +35,10 @@ scanner:
       network_idle_ms: 1500
     max_pages: 20
     max_actions_per_page: 15
+    dom_xss:
+      enabled: false
+      max_urls: 3
+      timeout_ms: 3000
   auth:
     cookies: {}
     headers: {}
@@ -194,6 +198,30 @@ scanner:
       max_tests_per_surface: 2
       request_budget: 2
       timeout_seconds: 2
+    ssrf:
+      enabled: false
+      max_tests_per_surface: 1
+      request_budget: 1
+      timeout_seconds: 2
+      callback_url: ""
+      expected_marker: ""
+      allow_external_callback: false
+    host_header:
+      enabled: false
+      max_tests_per_surface: 1
+      request_budget: 1
+      timeout_seconds: 2
+      canary_host: "scanner-host-canary.invalid"
+  active_verification:
+    cors:
+      enabled: true
+      max_urls: 10
+      origins:
+        - "https://cors-a.audit.invalid"
+        - "https://cors-b.audit.invalid"
+    graphql:
+      enabled: true
+      max_requests: 2
   output:
     format: ["json", "html"]
     file: "scan_report"
