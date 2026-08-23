@@ -23,10 +23,23 @@ class SecretRedactionFilter(logging.Filter):
 
 # --- Logging Setup ---
 def setup_logger(level="INFO", log_file="scanner.log"):
-    handlers = [logging.FileHandler(log_file), logging.StreamHandler()]
     redaction_filter = SecretRedactionFilter()
-    for handler in handlers:
-        handler.addFilter(redaction_filter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.addFilter(redaction_filter)
+    handlers = [stream_handler]
+
+    # A read-only working directory must not make the scanner unusable. Keep
+    # stderr logging available and add the file handler only when it can be
+    # opened safely by the current user (notably the non-root Docker user).
+    if log_file:
+        try:
+            file_handler = logging.FileHandler(log_file)
+        except OSError:
+            file_handler = None
+        if file_handler is not None:
+            file_handler.addFilter(redaction_filter)
+            handlers.insert(0, file_handler)
+
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
