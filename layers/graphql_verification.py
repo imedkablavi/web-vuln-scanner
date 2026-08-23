@@ -34,9 +34,13 @@ class GraphQLVerifier:
             intro = self._post(endpoint_url, INTROSPECTION_QUERY, "introspection")
             remaining -= 1
             if intro is not None:
+                payload = intro["payload"] if isinstance(intro["payload"], dict) else {}
+                data = payload.get("data") if isinstance(payload, dict) else {}
+                if not isinstance(data, dict):
+                    data = {}
                 self.observations["introspection"] = {
                     "status": intro["status"],
-                    "enabled": bool(intro["payload"].get("data", {}).get("__schema")) if isinstance(intro["payload"], dict) else False,
+                    "enabled": bool(data.get("__schema")),
                 }
 
         if remaining > 0:
