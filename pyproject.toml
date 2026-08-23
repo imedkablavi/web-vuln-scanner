@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.3.0"
 description = "Evidence-first command-line web security scanner for authorized targets"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "imedkablavi" }]
 keywords = ["security", "scanner", "web", "owasp", "vulnerability-assessment"]
 classifiers = [
@@ -16,7 +17,6 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: Information Technology",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -55,7 +55,7 @@ py-modules = ["main_v2"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "layers*", "plugins*", "workflows*"]
+include = ["core*", "layers*", "plugins*", "policies*", "workflows*"]
 namespaces = true
 
 [tool.pytest.ini_options]
