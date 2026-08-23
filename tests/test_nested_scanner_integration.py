@@ -102,5 +102,6 @@ def test_scanner_nested_json_baseline_and_candidates_share_transport_shape():
     ]
     assert owner_candidates
     assert reviewer_candidates
-    assert all(body["settings"]["enabled"] is False for body in candidate_jsons)
+    assert all(body["settings"]["enabled"] is False for body in owner_candidates)
+    assert all(body["settings"]["enabled"] is False for body in reviewer_candidates)
     assert all(call[2]["params"] == {"mode": "edit"} for call in manager.calls)
