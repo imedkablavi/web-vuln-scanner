@@ -54,6 +54,8 @@ def make_config(*, allow_private=False, include_domains=None, max_retries=0, per
             "lfi": {"enabled": False},
             "cmd_injection": {"enabled": False},
             "open_redirect": {"enabled": False},
+            "ssti": {"enabled": False},
+            "crlf_injection": {"enabled": False},
         },
     }
 
