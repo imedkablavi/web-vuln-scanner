@@ -165,10 +165,15 @@ scanner:
     sqli:
       enabled: true
       max_tests_per_surface: 3
+      request_budget: 3
+      timeout_seconds: 10
       time_based: false
       min_length_delta_ratio: 0.05
     business_logic:
       enabled: true
+      max_tests_per_surface: 3
+      request_budget: 3
+      timeout_seconds: 10
       idor:
         id_param_regex: "(^id$|_id$|Id$|doc)"
         numeric_delta: [-1, 1, 10]
