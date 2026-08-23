@@ -13,6 +13,7 @@ import requests
 
 from .models import AttackSurface, AuthActor, ActorSession, RequestRecord, ResponseRecord
 from .redaction import redact_structure, redact_text
+from .request_materializer import materialize_surface_request
 from .scope import ScopePolicy
 from .utils import logger
 
@@ -533,93 +534,49 @@ class RequestManager:
         actor: AuthActor | None = None,
         replay_of="",
     ):
-        base_params = dict(surface.params)
-        base_data = {}
-        base_headers = self.config.get("auth", {}).get("headers", {}).copy()
-        base_cookies = dict(self.cookies)
-        actor_session = self.build_actor_session(actor)
-        if actor_session:
-            base_headers.update(actor_session.headers)
-            base_cookies.update(actor_session.cookies)
-        has_body_inputs = False
-        for field in surface.inputs:
-            if field.kind == "body":
-                has_body_inputs = True
-                base_data[field.name] = field.value or ""
-            elif field.kind == "query":
-                base_params[field.name] = field.value or ""
-            elif field.kind == "header":
-                base_headers[field.name] = field.value or ""
-            elif field.kind == "cookie":
-                base_cookies[field.name] = field.value or ""
+        mutation_name = str(param_to_inject or "")
+        body_matches = [
+            field
+            for field in (surface.inputs or [])
+            if str(getattr(field, "kind", "") or "").lower() == "body"
+            and str(getattr(field, "name", "") or "") == mutation_name
+        ]
+        mutation_path = ""
+        mutate_body = bool(mutation_name and payload is not None and body_matches)
+        if mutate_body:
+            if len(body_matches) > 1:
+                paths = {
+                    str(getattr(field, "path", "") or "")
+                    for field in body_matches
+                }
+                raise ValueError(
+                    f"Body input '{mutation_name}' is ambiguous across paths: {sorted(paths)}"
+                )
+            mutation_path = str(getattr(body_matches[0], "path", "") or "")
 
-        if param_to_inject and payload is not None:
-            if param_to_inject in base_params:
-                base_params[param_to_inject] = payload
-            if param_to_inject in base_data:
-                base_data[param_to_inject] = payload
-
-        method = surface.method.upper()
-        if has_body_inputs and method == "GET":
-            logger.info(
-                f"Adjusting method to POST for body inputs on {surface.url}"
-            )
-            method = "POST"
-        supported = {"GET", "POST", "PUT", "DELETE", "PATCH"}
-        if method not in supported:
-            logger.warning(
-                f"Unsupported HTTP method {method} for surface {surface.url}, "
-                "falling back to GET"
-            )
-            method = "GET"
-
-        json_payload = None
-        if surface.meta.get("content_type", "").startswith("application/json"):
-            json_payload = base_data
-            base_data = None
-
-        actor_id = getattr(actor, "actor_id", "")
-
-        def _dispatch(request_headers, request_cookies):
-            return self.send(
-                method=method,
-                url=surface.url,
-                params=base_params if method == "GET" else None,
-                data=base_data if method != "GET" else None,
-                json=json_payload,
-                headers=request_headers,
-                cookies=request_cookies,
-                timeout=self.timeout,
-                actor_id=actor_id,
-                source=surface.source,
-                replay_of=replay_of,
-            )
-
-        response = _dispatch(dict(base_headers), dict(base_cookies))
-        if (
-            actor is None
-            or getattr(actor, "auth_type", "") == "none"
-            or self.auth_session_manager is None
-        ):
-            return response
-        if not self.auth_session_manager.response_requires_reauth(response):
-            return response
-        refreshed_state = self.auth_session_manager.handle_auth_failure(
-            actor, response
+        materialized = materialize_surface_request(
+            surface,
+            auth_headers=dict(self.config.get("auth", {}).get("headers", {}) or {}),
+            cookies=dict(self.cookies),
+            body_mutation_name=mutation_name,
+            body_mutation_path=mutation_path,
+            body_mutation_payload=payload,
+            mutate_body=mutate_body,
         )
-        if not refreshed_state or not getattr(
-            refreshed_state, "actor_ready", False
-        ):
-            return response
-        refreshed_session = self.build_actor_session(actor)
-        retry_headers = self.config.get("auth", {}).get("headers", {}).copy()
-        retry_cookies = dict(self.cookies)
-        if refreshed_session:
-            retry_headers.update(refreshed_session.headers)
-            retry_cookies.update(refreshed_session.cookies)
-        for field in surface.inputs:
-            if field.kind == "header":
-                retry_headers[field.name] = field.value or ""
-            elif field.kind == "cookie":
-                retry_cookies[field.name] = field.value or ""
-        return _dispatch(retry_headers, retry_cookies)
+        params = dict(materialized.params)
+        if mutation_name and payload is not None and mutation_name in params:
+            params[mutation_name] = payload
+
+        return self.send_as_actor(
+            materialized.method,
+            surface.url,
+            actor=actor,
+            params=params or None,
+            data=materialized.data,
+            json=materialized.json,
+            headers=materialized.headers or None,
+            cookies=materialized.cookies or None,
+            timeout=self.timeout,
+            source=surface.source,
+            replay_of=replay_of,
+        )
