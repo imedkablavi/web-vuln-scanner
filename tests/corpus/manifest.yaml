@@ -1,0 +1,37 @@
+version: 1
+target: smoke/mock_server.py
+network_policy: local-only
+cases:
+  - id: sqli-error-positive
+    path: /sqli?id=1
+    classification: intentionally-vulnerable
+    plugin: sqli
+    expected: detected
+  - id: stable-query-negative
+    path: /clean?id=1
+    classification: intentionally-safe
+    plugin: sqli
+    expected: no-finding
+  - id: cookie-auth-positive
+    path: /dashboard
+    classification: authenticated-session
+    credential: static-local-cookie
+    expected_status: 200
+  - id: cookie-auth-negative
+    path: /dashboard
+    classification: unauthenticated
+    expected_status: 401
+  - id: protected-idor-negative
+    path: /idor_protected?doc=2
+    classification: intentionally-safe
+    plugin: business_logic
+    expected: access-denied
+  - id: auth-bypass-positive
+    path: /auth_bypass?doc=1
+    classification: intentionally-vulnerable
+    plugin: business_logic
+    expected: cross-actor-signal
+notes:
+  - All corpus traffic must bind to 127.0.0.1 on an ephemeral port.
+  - CI must not require or contact public vulnerability targets.
+  - xss_reflected, lfi, cmd_injection, and open_redirect remain experimental until dedicated positive and negative gates are added.
