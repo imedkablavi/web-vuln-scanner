@@ -11,7 +11,9 @@ SENSITIVE_KEY_RE = re.compile(
 
 _TEXT_PATTERNS = [
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"),
-    re.compile(r"(?i)(\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|token)\s*[:=]\s*[\"']?)[^\"'\s&;,]{3,}"),
+    re.compile(
+        r"(?i)(\b[A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|token)\s*[:=]\s*[\"']?)[^\"'\s&;,]{3,}"
+    ),
     re.compile(r"(?i)([?&](?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|token)=)[^&#\s]+"),
     re.compile(r"(?i)(\b(?:session|sessionid|csrf)=)[^;\s,]+"),
 ]
