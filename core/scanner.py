@@ -7,9 +7,11 @@ from .utils import get_content_hash, logger
 from plugins.base import BasePlugin, PluginContractError
 from plugins.business_logic import BusinessLogicPlugin
 from plugins.cmd_injection import CMDInjectionPlugin
+from plugins.crlf_injection import CRLFInjectionPlugin
 from plugins.lfi import LFIPlugin
 from plugins.open_redirect import OpenRedirectPlugin
 from plugins.sqli import SQLiPlugin
+from plugins.ssti import SSTIPlugin
 from plugins.xss_reflected import XSSReflectedPlugin
 
 
@@ -21,8 +23,10 @@ class PluginRegistry:
         "lfi": LFIPlugin,
         "cmd_injection": CMDInjectionPlugin,
         "open_redirect": OpenRedirectPlugin,
+        "ssti": SSTIPlugin,
+        "crlf_injection": CRLFInjectionPlugin,
     }
-    experimental = {"xss_reflected", "lfi", "cmd_injection", "open_redirect"}
+    experimental = {"xss_reflected", "lfi", "cmd_injection", "open_redirect", "ssti", "crlf_injection"}
 
     @classmethod
     def load_plugins(cls, config, request_manager) -> List[BasePlugin]:
