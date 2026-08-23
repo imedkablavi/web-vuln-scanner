@@ -1,4 +1,4 @@
-version: 1
+version: 2
 target: smoke/mock_server.py
 additional_targets:
   - tests/corpus/additional_vuln_server.py
@@ -57,9 +57,78 @@ cases:
     classification: intentionally-safe
     plugin: crlf_injection
     expected: no-finding
+  - id: ssrf-callback-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssrf?url=callback
+    classification: intentionally-vulnerable
+    plugin: ssrf
+    expected: verified-callback-proof
+  - id: ssrf-callback-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssrf-safe?url=callback
+    classification: intentionally-safe
+    plugin: ssrf
+    expected: no-finding
+  - id: host-header-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /host-header
+    classification: intentionally-vulnerable
+    plugin: host_header
+    expected: verified-security-sensitive-url
+  - id: host-header-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /host-header-safe
+    classification: intentionally-safe
+    plugin: host_header
+    expected: no-finding
+  - id: cors-arbitrary-origin-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /cors-vuln
+    classification: intentionally-vulnerable
+    plugin: cors_verification
+    expected: verified-two-origin-reflection
+  - id: cors-allowlist-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /cors-safe
+    classification: intentionally-safe
+    plugin: cors_verification
+    expected: no-finding
+  - id: graphql-debug-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /graphql-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: graphql_verification
+    expected: verified-debug-disclosure
+  - id: graphql-debug-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /graphql-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: graphql_verification
+    expected: no-debug-finding
+  - id: dom-xss-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /dom-xss
+    classification: intentionally-vulnerable
+    plugin: dom_xss_verification
+    expected: verified-browser-execution
+  - id: dom-xss-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /dom-xss-safe
+    classification: intentionally-safe
+    plugin: dom_xss_verification
+    expected: no-finding
 notes:
-  - All corpus traffic must bind to 127.0.0.1 on an ephemeral port.
-  - CI must not require or contact public vulnerability targets.
-  - xss_reflected, lfi, cmd_injection, open_redirect, ssti, and crlf_injection remain experimental until their promotion gates are explicitly satisfied.
+  - All corpus traffic must bind to 127.0.0.1 on ephemeral ports.
+  - The SSRF callback proof service is also loopback-only and is created by the regression test on an ephemeral port.
+  - CI must not require or contact public vulnerability targets or public OAST services.
+  - xss_reflected, lfi, cmd_injection, open_redirect, ssti, crlf_injection, ssrf, and host_header remain registry-blocked experimental plugins.
+  - DOM-XSS verification is disabled by default and requires the dedicated Chromium gate before any promotion decision.
   - SSTI fixtures prove arithmetic expression evaluation only; no command execution, file reads, or sandbox escape probes are allowed.
   - CRLF fixtures use one inert X-Scanner-Canary header only; no cookie, redirect, script, or cache-control injection is allowed.
+  - SSRF never guesses cloud metadata, RFC1918, link-local, or loopback destinations; only an explicitly configured scanner-controlled callback is used.
+  - Host-header verification requires security-sensitive absolute URL or redirect influence; ordinary reflection is a negative control.
+  - CORS verification requires two distinct arbitrary Origin values with credentials; wildcard-plus-credentials alone is not treated as verified cross-origin access.
+  - GraphQL checks are non-mutating and capped at introspection plus one invalid-field validation query.
+  - DOM-XSS canary JavaScript sets one DOM data attribute only and performs no network callback, storage access, cookie access, navigation, or persistence.
