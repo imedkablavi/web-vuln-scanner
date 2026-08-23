@@ -4,7 +4,7 @@ This project is for authorized security assessment only. Automated CI targets mu
 
 ## Regression corpus
 
-The intentionally-vulnerable local corpus is implemented by `smoke/mock_server.py` and described by `tests/corpus/manifest.yaml`.
+The intentionally-vulnerable local corpus is implemented by `smoke/mock_server.py` plus the focused additional fixtures in `tests/corpus/additional_vuln_server.py`; both are described by `tests/corpus/manifest.yaml`.
 
 The required CI gates cover:
 
@@ -12,6 +12,8 @@ The required CI gates cover:
 - a known safe-query negative case;
 - authenticated cookie-session behavior;
 - unauthenticated denial behavior;
+- SSTI arithmetic-expression positive and negative cases;
+- CRLF response-header injection positive and negative cases;
 - scope rejection before network dispatch;
 - plugin request-budget enforcement;
 - per-request timeout enforcement;
@@ -57,8 +59,18 @@ The following plugins remain registry-blocked even when configuration attempts t
 - `lfi`
 - `cmd_injection`
 - `open_redirect`
+- `ssti`
+- `crlf_injection`
 
 Do not remove this block until each plugin has its own deterministic positive/negative corpus coverage, evidence-quality assertions, scope/budget tests and false-positive review.
+
+### SSTI safety boundary
+
+The experimental SSTI detector is intentionally limited to deterministic arithmetic-expression evaluation. It must not add command execution, subprocess access, file reads, object traversal, sandbox-escape chains, environment-variable access, or network callbacks as verification payloads.
+
+### CRLF safety boundary
+
+The experimental CRLF detector may create only one inert `X-Scanner-Canary` response header. It must not inject `Set-Cookie`, `Location`, cache directives, HTML/script content or other state-changing/security-sensitive headers.
 
 ## Report QA
 
