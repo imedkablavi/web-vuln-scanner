@@ -11,6 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -32,13 +33,13 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -e .[dev]
 
-      - name: Compile source
-        run: python -m compileall -q core layers plugins workflows smoke main_v2.py
+      - name: Compile source and local QA harnesses
+        run: python -m compileall -q core layers plugins workflows smoke scripts tests main_v2.py
 
       - name: Lint critical errors
         run: ruff check . --select E9,F63,F7,F82
 
-      - name: Unit tests
+      - name: Unit and regression tests
         run: python -m pytest -q
 
       - name: Verify helper CLIs
@@ -46,8 +47,28 @@ jobs:
           python -m core.scan_profiles passive --config config/default_config.yaml --output /tmp/passive.yaml
           python -m core.scan_profiles safe-active --config config/default_config.yaml --output /tmp/safe-active.yaml
 
+  security-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+      - name: Local synthetic regression corpus only
+        run: |
+          python -m pytest -q \
+            tests/test_security_regression.py \
+            tests/test_reporting_qa.py \
+            tests/test_concurrency.py
+
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -61,3 +82,55 @@ jobs:
         run: python smoke/run_smoke.py
       - name: Convert smoke report to SARIF
         run: python -m core.sarif smoke_out/scan_report.json --output smoke_out/scan_report.sarif
+      - name: Validate smoke outputs contain no obvious fixture secrets
+        run: |
+          ! grep -R -E "(user-pass|admin-pass|top-secret-token|super-secret-cookie)" smoke_out
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Install wheel in clean virtual environment
+        run: |
+          python -m venv /tmp/webvuln-package-check
+          /tmp/webvuln-package-check/bin/python -m pip install --upgrade pip
+          /tmp/webvuln-package-check/bin/python -m pip install dist/*.whl
+          /tmp/webvuln-package-check/bin/web-vuln-scanner --help
+          /tmp/webvuln-package-check/bin/web-vuln-sarif --help
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -t web-vuln-scanner:ci .
+      - name: CLI smoke inside image
+        run: docker run --rm web-vuln-scanner:ci --help
+
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Local synthetic concurrency benchmark
+        run: python scripts/benchmark_local.py
+      - name: Show benchmark report
+        run: cat benchmark_out/local-performance.json
