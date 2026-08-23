@@ -1,0 +1,51 @@
+{
+  "schema": "webvulnscanner/1.3",
+  "scan_info": {
+    "target": "http://127.0.0.1:8080",
+    "target_classification": "local-test",
+    "status": "completed",
+    "collection_methods": ["local-regression-corpus"],
+    "loaded_plugins": ["sqli"],
+    "findings_total": 1
+  },
+  "summary": {
+    "total_findings": 1,
+    "by_verification_status": {"detected": 1},
+    "by_plugin": {"sqli": 1},
+    "by_severity": {"HIGH": 1},
+    "by_category": {"injection": 1},
+    "by_scanner_mode": {"active-web": 1}
+  },
+  "config": {
+    "scanner": {
+      "auth": {
+        "headers": "***redacted***",
+        "cookies": "***redacted***"
+      }
+    }
+  },
+  "findings": [
+    {
+      "plugin": "sqli",
+      "title": "SQL Injection Signal",
+      "type": "SQL Injection",
+      "category": "injection",
+      "severity": "HIGH",
+      "confidence": "HIGH",
+      "verification_status": "detected",
+      "scanner_mode": "active-web",
+      "url": "http://127.0.0.1:8080/sqli?id=1",
+      "evidence": {
+        "signal": "sql_error_pattern",
+        "status": 200,
+        "response_excerpt": "SQL syntax error near quoted input"
+      },
+      "reproduction": {
+        "param": "id",
+        "kind": "query",
+        "payload": "'"
+      },
+      "remediation": "Use parameterized queries/ORM bindings and validate inputs."
+    }
+  ]
+}
