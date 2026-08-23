@@ -12,6 +12,7 @@ class CMDInjectionPlugin(BasePlugin):
     name = "cmd_injection"
     supported_input_kinds = ["query", "body"]
     default_candidate_param_regex = r"(?i)(cmd|command|exec|host|hostname|ip|ping|lookup|target|query|name)"
+    allowed_separators = (";", "&&")
 
     @classmethod
     def enabled(cls, config: Dict) -> bool:
@@ -42,15 +43,21 @@ class CMDInjectionPlugin(BasePlugin):
     def applicable(self, surface: AttackSurface, context=None):
         return bool(self._targets(surface))
 
+    def _separators(self) -> List[str]:
+        requested = self.config.get("separators", list(self.allowed_separators))
+        if not isinstance(requested, (list, tuple)):
+            requested = list(self.allowed_separators)
+        selected = [value for value in requested if value in self.allowed_separators]
+        return selected[:2] or list(self.allowed_separators)
+
     def generate_tests(self, surface: AttackSurface, context: Dict) -> List[TestCase]:
         if not bool(self.config.get("allow_command_probe", False)):
             return []
         max_params = max(1, min(3, int(self.config.get("max_params", 1))))
-        separators = list(self.config.get("separators", [";", "&&"]))[:2]
         tests: List[TestCase] = []
         for name, kind in self._targets(surface)[:max_params]:
             token = f"WVS_CMD_{secrets.token_hex(5)}"
-            for separator in separators:
+            for separator in self._separators():
                 payload = f"{separator} echo {token}"
                 tests.append(
                     TestCase(
