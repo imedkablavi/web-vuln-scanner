@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from .insertion_points import json_document_from_inputs, mutate_json_inputs
+from .request_materializer import materialize_surface_request
 from .utils import logger
 
 
@@ -68,27 +68,24 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
             "This plugin test requires a RequestManager-compatible send_as_actor() implementation"
         )
 
-    params = dict(getattr(surface, "params", {}) or {})
-    data = {}
     requester_config = getattr(requester, "config", {}) or {}
-    headers = dict(requester_config.get("auth", {}).get("headers", {}) or {})
-    cookies = dict(getattr(requester, "cookies", {}) or {})
-    body_inputs = []
-
-    for field in getattr(surface, "inputs", []) or []:
-        field_kind = str(field.kind or "").lower()
-        if field_kind == "body":
-            body_inputs.append(field)
-            if not str(getattr(field, "path", "") or "").startswith("/"):
-                data[field.name] = field.value if field.value is not None else ""
-        elif field_kind == "query":
-            params[field.name] = field.value if field.value is not None else ""
-        elif field_kind == "header":
-            headers[field.name] = field.value if field.value is not None else ""
-        elif field_kind == "cookie":
-            cookies[field.name] = field.value if field.value is not None else ""
+    materialized = materialize_surface_request(
+        surface,
+        auth_headers=dict(requester_config.get("auth", {}).get("headers", {}) or {}),
+        cookies=dict(getattr(requester, "cookies", {}) or {}),
+        body_mutation_name=name,
+        body_mutation_path=input_path,
+        body_mutation_payload=payload,
+        mutate_body=(kind == "body"),
+    )
 
     target_url = surface.url
+    params = dict(materialized.params)
+    headers = dict(materialized.headers)
+    cookies = dict(materialized.cookies)
+    form_payload = materialized.data
+    json_payload = materialized.json
+
     if kind == "query":
         params[name] = payload
     elif kind == "header":
@@ -99,33 +96,12 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
         target_url = _inject_path(target_url, surface, name, payload)
 
     override = str(getattr(testcase, "method_override", "") or "").upper()
-    method = override or str(surface.method or "GET").upper()
-    if not override and body_inputs and method == "GET":
-        method = "POST"
+    method = override or materialized.method
     if method not in _SUPPORTED_METHODS:
         raise ValueError(f"Unsupported plugin HTTP method: {method}")
-
-    content_type = str(
-        (getattr(surface, "meta", {}) or {}).get("content_type", "")
-    ).lower()
-    is_json = content_type.startswith("application/json") or "+json" in content_type
-
-    json_payload = None
-    form_payload = None
-    if is_json:
-        if kind == "body":
-            json_payload = mutate_json_inputs(
-                body_inputs,
-                name=name,
-                path=input_path,
-                payload=payload,
-            )
-        elif body_inputs:
-            json_payload = json_document_from_inputs(body_inputs)
-    else:
-        if kind == "body":
-            data[name] = payload
-        form_payload = data or None
+    if method in {"GET", "HEAD"}:
+        form_payload = None
+        json_payload = None
 
     logger.debug(
         "Plugin request %s %s input=%s:%s path=%s",
@@ -140,8 +116,8 @@ def send_plugin_test(requester, surface, testcase, *, actor=None, replay_of=""):
         target_url,
         actor=actor,
         params=params or None,
-        data=form_payload if method not in {"GET", "HEAD"} else None,
-        json=json_payload if method not in {"GET", "HEAD"} else None,
+        data=form_payload,
+        json=json_payload,
         headers=headers or None,
         cookies=cookies or None,
         timeout=getattr(requester, "timeout", None),
