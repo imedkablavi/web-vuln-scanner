@@ -1,53 +1,96 @@
-import logging
 import hashlib
+import logging
 import re
 from copy import deepcopy
-from typing import Dict, Any
+from typing import Any, Dict
 from urllib.parse import urlparse
+
+
+SENSITIVE_KEY = re.compile(r"(password|passwd|token|authorization|cookie|set-cookie|api[-_]?key|secret|csrf)", re.IGNORECASE)
+BEARER_VALUE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/]+=*")
+SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(password|passwd|token|authorization|cookie|set-cookie|api[-_]?key|secret|csrf)"
+    r"(\s*[:=]\s*)([^\s,;]+)"
+)
+JWT_VALUE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+
+
+def redact_text(value: Any) -> str:
+    """Best-effort redaction for log strings and free-form diagnostic text."""
+
+    text = str(value)
+    text = BEARER_VALUE.sub("Bearer ***redacted***", text)
+    text = JWT_VALUE.sub("***redacted-jwt***", text)
+    text = SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}***redacted***", text)
+    return text
+
+
+def redact_sensitive_data(value: Any):
+    """Recursively redact values whose keys are likely to contain authentication material."""
+
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if SENSITIVE_KEY.search(str(key)):
+                redacted[key] = "***redacted***"
+            else:
+                redacted[key] = redact_sensitive_data(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_sensitive_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive_data(item) for item in value)
+    if isinstance(value, str):
+        return redact_text(value)
+    return value
+
+
+class SecretRedactionFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = redact_text(record.getMessage())
+            record.args = ()
+        except Exception:
+            return True
+        return True
+
 
 # --- Logging Setup ---
 def setup_logger(level="INFO", log_file="scanner.log"):
+    handlers = [logging.FileHandler(log_file), logging.StreamHandler()]
+    redaction_filter = SecretRedactionFilter()
+    for handler in handlers:
+        handler.addFilter(redaction_filter)
     logging.basicConfig(
         level=getattr(logging, level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=handlers,
     )
     return logging.getLogger("WebVulnScanner")
 
+
 logger = setup_logger()
+
 
 # --- Content Hashing for Stability Checks ---
 def get_content_hash(content):
-    """
-    Generates a hash of the content, ignoring dynamic elements like timestamps or CSRF tokens.
-    This is a simplified normalization.
-    """
-    # Remove potential dynamic content using regex
-    # 1. Remove timestamps (simple heuristic)
-    content = re.sub(r'\d{4}-\d{2}-\d{2}', '', content)
-    content = re.sub(r'\d{2}:\d{2}:\d{2}', '', content)
-    # 2. Remove potential CSRF tokens (hex strings of 32+ chars)
-    content = re.sub(r'[a-fA-F0-9]{32,}', '', content)
-    
-    return hashlib.md5(content.encode('utf-8', errors='ignore')).hexdigest()
+    """Generate a normalized content hash for response comparison."""
+
+    content = re.sub(r"\d{4}-\d{2}-\d{2}", "", content)
+    content = re.sub(r"\d{2}:\d{2}:\d{2}", "", content)
+    content = re.sub(r"[a-fA-F0-9]{32,}", "", content)
+    return hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
+
 
 def normalize_url(url):
-    """Normalizes URL by removing fragments and sorting query params."""
+    """Normalize URL by dropping fragments/query values for deduplication."""
+
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 def sanitize_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Remove sensitive information (tokens/passwords/cookies) before logging or reporting.
-    """
+    """Return a deep-copied, recursively redacted configuration."""
+
     clean = deepcopy(config)
-    auth = clean.get("auth") or clean.get("scanner", {}).get("auth")
-    if auth:
-        for key in ("cookies", "headers", "password", "token", "api_key"):
-            if isinstance(auth, dict) and key in auth:
-                auth[key] = "***redacted***"
-    return clean
+    return redact_sensitive_data(clean)
