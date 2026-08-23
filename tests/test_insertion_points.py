@@ -116,7 +116,7 @@ def test_site_surface_fingerprint_distinguishes_duplicate_leaf_paths():
     assert left.id != right.id
 
 
-def test_stable_plugins_skip_nested_body_until_baseline_parity():
+def test_stable_plugins_allow_nested_json_after_baseline_parity():
     surface = AttackSurface(
         url="https://example.test/api",
         method="POST",
@@ -124,7 +124,7 @@ def test_stable_plugins_skip_nested_body_until_baseline_parity():
             InputField(name="top", value="x", kind="body", path="/top"),
             InputField(name="email", value="x", kind="body", path="/profile/email"),
         ],
-        meta={"content_type": "application/json"},
+        meta={"content_type": "application/json", "body_format": "json"},
     )
     sqli = SQLiPlugin(None, {"enabled": True, "max_tests_per_surface": 8})
     xss = XSSReflectedPlugin(None, {"enabled": True, "max_tests_per_surface": 8})
@@ -133,6 +133,6 @@ def test_stable_plugins_skip_nested_body_until_baseline_parity():
     xss_tests = xss.generate_tests(surface, {})
 
     assert any(test.param == "top" for test in sqli_tests)
-    assert all(test.input_path != "/profile/email" for test in sqli_tests)
+    assert any(test.input_path == "/profile/email" for test in sqli_tests)
     assert any(test.param == "top" for test in xss_tests)
-    assert all(test.input_path != "/profile/email" for test in xss_tests)
+    assert any(test.input_path == "/profile/email" for test in xss_tests)
