@@ -70,10 +70,13 @@ class BasePlugin(ABC):
         except (TypeError, ValueError):
             return 6
 
-    @classmethod
-    def request_budget(cls, config: Dict) -> int:
-        """Maximum candidate requests a plugin may issue for one surface."""
-        default = cls.max_tests_per_surface(config)
+    def request_budget(self, config: Dict) -> int:
+        """Maximum candidate requests this plugin may issue for one surface.
+
+        This deliberately dispatches `max_tests_per_surface` through the instance
+        because older plugins override that hook as an instance method.
+        """
+        default = self.max_tests_per_surface(config)
         try:
             value = int(config.get("request_budget", default))
         except (TypeError, ValueError):
