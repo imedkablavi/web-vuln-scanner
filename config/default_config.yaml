@@ -222,6 +222,70 @@ scanner:
     graphql:
       enabled: true
       max_requests: 2
+    xxe:
+      enabled: false
+      endpoint_url: ""
+      callback_url: ""
+      expected_marker: ""
+      allow_external_callback: false
+      timeout_seconds: 2
+    csrf:
+      enabled: false
+      explicit_opt_in: false
+      endpoint_url: ""
+      token_field: "csrf_token"
+      token_value: ""
+      form_data: {}
+      success_marker: ""
+      hostile_origin: "https://csrf-audit.invalid"
+      trusted_origin: ""
+      timeout_seconds: 2
+    nosql:
+      enabled: false
+      explicit_opt_in: false
+      endpoint_url: ""
+      field: ""
+      control_value: "scanner-nosql-canary"
+      success_json_path: "matched"
+      expected_value: true
+      timeout_seconds: 2
+    jwt:
+      enabled: false
+      token_env: ""
+      expected_issuer: ""
+      expected_audience: ""
+      require_exp: true
+      allowed_algorithms: []
+      clock_skew_seconds: 30
+    oidc:
+      enabled: false
+      metadata_url: ""
+      expected_issuer: ""
+      public_client: true
+      timeout_seconds: 2
+    oauth_flow:
+      enabled: false
+      explicit_opt_in: false
+      allow_external_flow: false
+      authorization_url: ""
+      client_id: ""
+      redirect_uri: ""
+      timeout_seconds: 3
+    file_upload:
+      enabled: false
+      explicit_opt_in: false
+      upload_url: ""
+      field_name: "file"
+      filename: "scanner-audit.html"
+      marker: "scanner-upload-canary"
+      response_url_json_path: "url"
+      timeout_seconds: 3
+    cache_poisoning:
+      enabled: false
+      explicit_opt_in: false
+      url: ""
+      canary_host: "scanner-cache-canary.invalid"
+      timeout_seconds: 3
   output:
     format: ["json", "html"]
     file: "scan_report"

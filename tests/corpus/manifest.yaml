@@ -1,4 +1,4 @@
-version: 2
+version: 3
 target: smoke/mock_server.py
 additional_targets:
   - tests/corpus/additional_vuln_server.py
@@ -119,11 +119,121 @@ cases:
     classification: intentionally-safe
     plugin: dom_xss_verification
     expected: no-finding
+  - id: xxe-controlled-entity-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /xxe-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: xxe_verification
+    expected: verified-controlled-callback
+  - id: xxe-doctype-disabled-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /xxe-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: xxe_verification
+    expected: no-finding
+  - id: csrf-tokenless-cross-site-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /csrf-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: csrf_verification
+    expected: verified-request-integrity
+  - id: csrf-token-enforced-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /csrf-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: csrf_verification
+    expected: no-finding
+  - id: nosql-eq-operator-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /nosql-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: nosql_verification
+    expected: verified-operator-semantics
+  - id: nosql-scalar-schema-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /nosql-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: nosql_verification
+    expected: no-finding
+  - id: oidc-pkce-plain-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /oidc-vuln/.well-known/openid-configuration
+    classification: intentionally-vulnerable
+    plugin: oidc_verification
+    expected: s256-not-advertised
+  - id: oidc-pkce-s256-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /oidc-safe/.well-known/openid-configuration
+    classification: intentionally-safe
+    plugin: oidc_verification
+    expected: no-finding
+  - id: oauth-redirect-binding-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /oauth-vuln/authorize
+    classification: intentionally-vulnerable
+    plugin: oauth_flow_verification
+    expected: verified-invalid-redirect-accepted
+  - id: oauth-redirect-binding-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /oauth-safe/authorize
+    classification: intentionally-safe
+    plugin: oauth_flow_verification
+    expected: no-finding
+  - id: upload-inline-html-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /upload-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: file_upload_verification
+    expected: verified-inline-active-content
+  - id: upload-download-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /upload-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: file_upload_verification
+    expected: no-finding
+  - id: cache-unkeyed-forwarded-host-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /cache-vuln
+    classification: intentionally-vulnerable
+    plugin: cache_poisoning_verification
+    expected: verified-canary-replay
+  - id: cache-canonical-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /cache-safe
+    classification: intentionally-safe
+    plugin: cache_poisoning_verification
+    expected: no-finding
+  - id: jwt-offline-policy-positive
+    target: tests/test_extended_detectors.py
+    path: synthetic-jwt-env
+    classification: intentionally-vulnerable
+    plugin: jwt_validation
+    expected: detected-policy-violations
+  - id: jwt-offline-policy-negative
+    target: tests/test_extended_detectors.py
+    path: synthetic-jwt-env
+    classification: intentionally-safe
+    plugin: jwt_validation
+    expected: no-finding
 notes:
   - All corpus traffic must bind to 127.0.0.1 on ephemeral ports.
-  - The SSRF callback proof service is also loopback-only and is created by the regression test on an ephemeral port.
-  - CI must not require or contact public vulnerability targets or public OAST services.
+  - The SSRF and XXE callback proof services are loopback-only and created by regression tests on ephemeral ports.
+  - CI must not require or contact public vulnerability targets, public OAST services, OAuth providers, or identity providers.
   - xss_reflected, lfi, cmd_injection, open_redirect, ssti, crlf_injection, ssrf, and host_header remain registry-blocked experimental plugins.
+  - XXE, CSRF, NoSQL, OIDC, OAuth-flow, file-upload, cache-poisoning, and JWT validation layers are disabled by default.
+  - JWT validation is offline-only, takes its synthetic token from an environment variable, and never persists the raw token.
+  - CSRF, NoSQL, OAuth-flow, file-upload, and cache-poisoning active checks require explicit opt-in before they dispatch configured probes.
+  - OAuth-flow public-provider probing is blocked by default; CI authorization and redirect endpoints are loopback-only.
+  - File-upload fixtures use harmless static HTML without JavaScript or executable/polyglot payloads.
+  - Cache-poisoning verification uses a unique query key and a reserved .invalid X-Forwarded-Host canary to isolate the synthetic cache entry.
   - DOM-XSS verification is disabled by default and requires the dedicated Chromium gate before any promotion decision.
   - SSTI fixtures prove arithmetic expression evaluation only; no command execution, file reads, or sandbox escape probes are allowed.
   - CRLF fixtures use one inert X-Scanner-Canary header only; no cookie, redirect, script, or cache-control injection is allowed.

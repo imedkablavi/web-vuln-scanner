@@ -2,107 +2,102 @@
 
 This roadmap prioritizes deterministic proof over payload count. Public CI remains local/synthetic and no detector is promoted solely because implementation exists.
 
-## Implemented in the hardening branch
+## Implemented on the hardening branch
 
-### SSTI expression evaluation — experimental
+### Active plugins / browser layers
 
-- CWE-1336.
-- Marker-only arithmetic expression verification.
-- Dedicated local positive/negative fixtures.
-- Maximum two candidate requests per surface.
-- No command execution, file access, environment access, object traversal, sandbox escape, or network callbacks.
+- **SSTI expression evaluation — experimental:** arithmetic marker only; max two requests; no command/file/sandbox/network execution.
+- **CRLF response-header injection — experimental:** one inert header canary; max two requests.
+- **SSRF callback proof — experimental:** one candidate request to an explicitly configured scanner callback; no internal-address guessing.
+- **Host-header trust — experimental:** reserved `.invalid` canary; reports security-sensitive absolute URL/redirect influence only.
+- **Credentialed CORS verification:** two unrelated synthetic origins must both be reflected with credentials.
+- **GraphQL verification:** introspection observation plus one invalid-field debug query; no mutations or resource-exhaustion probes.
+- **DOM-XSS Chromium verification — experimental browser layer:** fragment canary must actually execute; `innerHTML` positive and `textContent` negative fixtures.
 
-### CRLF / response-header injection — experimental
+### New bounded verification layers — disabled by default
 
-- CWE-113.
-- One inert response-header canary only.
-- Dedicated local positive/negative fixtures.
-- Maximum two candidate requests per surface.
-- No cookie, redirect, cache-control, HTML, or script injection.
+#### XXE / unsafe XML
 
-### SSRF callback proof — experimental
+- One explicitly configured XML endpoint and controlled entity callback.
+- Local positive fixture performs real entity resolution against a second loopback server; hardened negative rejects DTD processing.
+- No `file://`, local-file reads, metadata addresses, arbitrary private services or callback guessing.
+- Maximum one target POST; external callbacks require explicit opt-in.
 
-- CWE-918.
-- Requires an explicitly configured scanner-controlled callback and expected proof marker.
-- Local CI uses a second loopback HTTP server on an ephemeral port and the vulnerable fixture performs a real server-side fetch.
-- Maximum one candidate request per surface.
-- No guessed cloud-metadata, RFC1918, link-local, alternate-IP, or internal-service probes.
-- External callback use requires explicit opt-in and remains registry-blocked pending broader quality review.
+#### CSRF request-integrity verification
 
-### Host-header trust — experimental
+- Requires `explicit_opt_in` and a known-safe configured action.
+- Two requests only: authenticated same-origin request with token, then cross-site request without token.
+- Positive proof requires both requests to satisfy the configured success marker; negative fixture enforces the token.
+- Ambient cookie values are reused but never written into evidence.
 
-- CWE-346 / CWE-644.
-- Uses a reserved `.invalid` Host canary.
-- Reports only when the canary reaches a redirect destination or security-sensitive absolute URL.
-- Plain Host reflection is intentionally insufficient.
-- Maximum one candidate request per surface.
+#### NoSQL document-query semantics
 
-### Credentialed CORS verification — bounded verification layer
+- Requires `explicit_opt_in`, a configured endpoint and field.
+- Compares scalar input with exactly one equivalent `$eq` object.
+- Positive fixture interprets the operator; negative fixture enforces scalar schema.
+- No `$where`, JavaScript execution, regex DoS or destructive writes.
 
-- Two different untrusted synthetic Origin values are required.
-- Both must be reflected exactly with credentials enabled before a finding is verified.
-- Allowlisted-origin negative fixture prevents reflection-only false positives.
-- Wildcard-plus-credentials is not mislabeled as verified credentialed cross-origin read access.
+#### JWT token-policy validation
 
-### GraphQL-specific verification — bounded verification layer
+- Offline-only; zero target requests.
+- Synthetic/current sample is read from a named environment variable and never persisted.
+- Checks unsecured/missing algorithm, configured algorithm allowlist, expiration, issuer and audience policy.
+- Does **not** prove server-side signature bypass or token acceptance and does not brute-force keys.
 
-- Introspection is observed as posture metadata.
-- One non-mutating invalid-field query checks for stack traces, exception objects, server paths, and debug extensions.
-- Dedicated verbose-error positive and sanitized-error negative fixtures.
-- Maximum two requests per configured GraphQL endpoint.
-- No mutation, deep-recursion, alias flood, batch flood, or DoS probe.
+#### OIDC discovery validation
 
-### DOM-XSS Chromium verification — experimental browser layer
+- One metadata GET only.
+- Checks exact configured issuer binding, HTTPS-or-loopback advertised endpoints, and PKCE S256 advertisement for public clients.
+- No credentials, authorization request, code exchange or token exchange.
 
-- Fragment-only canary through `location.hash`.
-- A finding requires actual JavaScript execution in Chromium, not string reflection or static sink matching.
-- Canary side effect is limited to one DOM data attribute.
-- No network callback, storage/cookie access, navigation, persistence, or data extraction.
-- Dedicated `innerHTML` positive and `textContent` negative fixtures.
-- Disabled by default and gated by a dedicated Chromium CI test.
+#### OAuth flow validation
 
-## High-priority next detector families
+- Requires `explicit_opt_in`; default authorization/redirect endpoints are loopback-only.
+- Two credential-free authorization GETs compare the registered redirect with a reserved `.invalid` redirect and check state preservation.
+- Public-provider probing requires a separate `allow_external_flow` opt-in.
 
-### XXE / unsafe XML parsing
+#### File-upload handling
 
-Use only synthetic XML endpoints and a local controlled entity-resolution fixture. The detector must not read real local files or contact arbitrary network destinations. Positive evidence should prove entity resolution using a synthetic canary resource; negatives should include hardened parsers and unsupported content types.
+- Requires `explicit_opt_in` on a disposable authorized upload endpoint.
+- Harmless static HTML marker only; no JavaScript, executable file, polyglot or persistence payload.
+- Maximum one upload plus one same-origin retrieval request.
+- Reports only when the marker is served inline as `text/html`; safe fixture serves as download/octet-stream.
 
-### CSRF
+#### Cache poisoning / cache-key confusion
 
-Avoid "form has no token" heuristics as a verified finding. A useful detector needs authenticated state-changing local workflows, same-site/origin controls, token lifecycle tests, and deterministic proof that a cross-site request can change synthetic state without the required anti-CSRF control.
+- Requires `explicit_opt_in` on a known-safe cacheable URL.
+- Uses a unique query key and reserved `.invalid` `X-Forwarded-Host` canary to isolate test state.
+- Two GETs only; proof requires the second request to replay the canary without the header.
+- No executable content or shared generic cache key is used.
 
-### NoSQL / document-query injection
-
-Require local synthetic data stores or deterministic mock query semantics. Promotion should prove query-operator influence without destructive mutations and include safe-query negatives.
+## Next detector families
 
 ### LDAP / XPath injection
+Build only after a local directory/XML-query fixture exists. Proof should demonstrate unintended synthetic query semantics without destructive or privilege-changing actions.
 
-Add only after a local directory/XML query fixture exists. Detection should prove unintended query semantic changes using synthetic records rather than destructive or privilege-changing actions.
+### JWT server-side validation harness
+The current JWT layer is offline posture only. A future synthetic issuer/resource-server harness can validate signature enforcement, key selection, issuer/audience binding and token confusion without attacks against real credentials.
 
-### JWT / token validation weaknesses
+### OAuth/OIDC synthetic provider expansion
+Add nonce, response-mode, code-use, PKCE verifier and issuer mix-up fixtures using a fully synthetic authorization server/client pair before considering stronger claims.
 
-Prefer validation-focused checks: algorithm policy, issuer/audience binding, expiry handling, key selection, and token confusion. CI should use only synthetic keys/tokens. Do not add brute-force recovery or attacks against real credentials.
+### WebSocket authorization
+Requires authenticated local channel fixtures and deterministic cross-actor policy expectations.
 
-### OAuth/OIDC flow validation
+### GraphQL authorization depth
+Build on the existing schema/auth harness with synthetic object ownership and field-level authorization expectations.
 
-Focus on state/nonce/PKCE, redirect URI binding, issuer/audience validation, and token leakage. Promotion requires a synthetic authorization-server/client pair.
+### HTTP request smuggling/desynchronization
+Research-heavy: requires a purpose-built local proxy/origin harness, raw-protocol isolation and strict request/time bounds. Do not probe arbitrary production proxy chains by default.
 
-### File-upload security
+### Race-condition/business-logic checks
+Only with synthetic idempotent state transitions, bounded concurrency and rollback/reset support.
 
-Start with synthetic upload handlers and inert files. Any active validation must enforce strict size limits and never attempt executable payloads or persistence.
+### Web cache deception
+Requires deterministic local proxy/cache fixtures distinct from the implemented unkeyed-header cache-poisoning proof.
 
-### Cache poisoning / cache-key confusion
-
-Requires a local cache fixture with deterministic cache state. A reportable result should prove a synthetic response variant is stored under an incorrect cache key without executable content.
-
-## Lower-priority / research-heavy families
-
-- HTTP request smuggling/desynchronization: requires a purpose-built local proxy/origin harness and strict request/time bounds.
-- WebSocket authorization: needs authenticated local channel fixtures and cross-actor access checks.
-- GraphQL authorization depth: build on the existing GraphQL/auth harness with local schema fixtures and per-object authorization expectations.
-- Race-condition/business-logic checks: only with synthetic idempotent state transitions and bounded concurrency.
-- Web cache deception: requires deterministic local proxy/cache fixtures.
-- Prototype pollution: relevant only when JavaScript execution paths can be verified safely in a controlled fixture.
+### Prototype pollution
+Relevant only when a controlled JavaScript execution path and reliable positive/negative fixtures can prove a concrete effect safely.
 
 ## Promotion rule
 
