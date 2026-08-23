@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 import json
+import re
 import threading
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
@@ -17,7 +19,7 @@ class RegressionCorpusServer(ThreadingHTTPServer):
 
 
 class RegressionCorpusHandler(BaseHTTPRequestHandler):
-    server_version = "WebVulnRegressionCorpus/1.0"
+    server_version = "WebVulnRegressionCorpus/1.1"
 
     def log_message(self, format, *args):  # pragma: no cover - keep CI quiet
         return
@@ -53,6 +55,10 @@ class RegressionCorpusHandler(BaseHTTPRequestHandler):
                 self._send(200, "record:1")
             return
 
+        if parsed.path == "/sqli-baseline-error":
+            self._send(200, "SQL syntax error shown by a static diagnostics banner")
+            return
+
         if parsed.path == "/auth/profile":
             session = self._cookies().get("session", "")
             if session in {"user-token", "admin-token"}:
@@ -77,19 +83,55 @@ class RegressionCorpusHandler(BaseHTTPRequestHandler):
                 self._send(200, "ok")
             return
 
-        # Synthetic endpoints reserved for future quality gates. The related
-        # plugins remain experimental and are deliberately not enabled in CI.
+        # All active-check fixtures below are synthetic localhost behavior.
         if parsed.path == "/experimental/xss":
-            self._send(200, query.get("q", [""])[0])
+            value = query.get("q", [""])[0]
+            self._send(
+                200,
+                f"<!doctype html><html><body><div id='sink'>{value}</div></body></html>",
+                content_type="text/html; charset=utf-8",
+            )
             return
+        if parsed.path == "/experimental/xss-safe":
+            value = html.escape(query.get("q", [""])[0], quote=True)
+            self._send(
+                200,
+                f"<!doctype html><html><body><div id='sink'>{value}</div></body></html>",
+                content_type="text/html; charset=utf-8",
+            )
+            return
+
         if parsed.path == "/experimental/lfi":
-            self._send(200, "root:x:0:0:synthetic")
+            value = query.get("file", [""])[0]
+            if "../" in value or "..\\" in value:
+                if "win.ini" in value.lower():
+                    self._send(200, "[extensions]\nsynthetic=true\n")
+                else:
+                    self._send(200, "root:x:0:0:synthetic:/root:/bin/false\n")
+            else:
+                self._send(200, "public help document")
             return
+        if parsed.path == "/experimental/lfi-safe":
+            self._send(200, "public help document")
+            return
+
         if parsed.path == "/experimental/cmd":
-            self._send(200, "synthetic-command-marker")
+            value = query.get("cmd", [""])[0]
+            marker = re.search(r"\bWVS_CMD_[0-9a-f]{10}\b", value)
+            if marker and (";" in value or "&&" in value):
+                self._send(200, f"command output: {marker.group(0)}")
+            else:
+                self._send(200, "diagnostic status: ok")
             return
+        if parsed.path == "/experimental/cmd-safe":
+            self._send(200, "diagnostic status: ok")
+            return
+
         if parsed.path == "/experimental/redirect":
             self._send(302, "redirect", headers={"Location": query.get("next", ["/safe"])[0]})
+            return
+        if parsed.path == "/experimental/redirect-safe":
+            self._send(302, "redirect", headers={"Location": "/safe"})
             return
 
         self._send(404, "not found")
