@@ -90,7 +90,8 @@ class RequestManager:
         try:
             ip = ipaddress.ip_address(host)
             if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                return self.allow_private
+                if not self.allow_private:
+                    return False
         except ValueError:
             pass
         if not self.include_domains:
