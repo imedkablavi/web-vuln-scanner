@@ -1,28 +1,57 @@
-# Security & Responsible Use
+# Security Policy
 
-- **Authorized scanning only**: Run the scanner only against assets you own or have explicit permission to test.
-- **Scope controls**: Configure `scanner.scope.include_domains` / `allowlist`; SSRF guard blocks hosts outside scope and private IPs unless `allow_private=true`.
-- **Data handling**: Findings/evidence may contain sensitive data. Store reports securely and avoid sharing outside trusted channels.
-- **Browser automation**: Playwright-driven verification may execute target scripts. Use isolated environments and keep browsers patched.
-- **Evidence-first interpretation**:
-  - `verified` means the current implementation captured stronger, reproducible proof.
-  - `detected` means a concrete signal was observed, but exploit confirmation is incomplete.
-  - `suspected` means the behavior was interesting enough to report, but not strong enough to call confirmed.
-  - `informational` means the scanner observed posture or inventory data that may matter operationally but is not itself an exploit confirmation.
-  - Anything not evidenced should be treated as untrusted and manually reviewed before action.
-  - Anything not reproducible must not be treated as confirmed.
-- **Auth harness**:
-  - Access-control findings must include cross-actor evidence before they can remain `verified`.
-  - Actors are not considered ready unless login, verify, or refresh produced explicit proof.
-  - Browser-driven login does not count as successful unless it yields a usable session state and HTTP or verification proof.
-  - Placeholder credentials in `config/default_config.yaml` use environment variable references only; do not commit real secrets.
-  - If login or refresh fails, the affected actor is reported as degraded/login_failed/refresh_failed and related verification scenarios remain partial.
-  - Browser actor artifacts are optional supporting evidence, not the sole basis for confirmation.
-  - Deterministic RBAC verification requires an explicit policy matrix plus actor readiness; otherwise the engine stays heuristic or partial by design.
-  - Replay results are evidence aids, not independent proof, unless they reproduce the actor-scoped scenario truthfully.
-  - Workflow verification requires step-level evidence and checkpoint agreement; a workflow marked `partial`, `failed`, `blocked_auth`, or `indeterminate` must not be treated as a completed verification.
-  - Workflow replay is separate from request replay and only counts as reproduced when the replayed workflow matches the original checkpoint trail.
-- **Local/mock labeling**: Reports classify localhost/private targets as local test environments so demo or smoke results are not mistaken for production findings.
-- **Disclosure**: Report vulnerabilities responsibly to the affected parties following their disclosure policy.
+## Authorized use
 
-If you discover a security issue in this project, open a private issue or contact the maintainers with a minimal, reproducible description.
+Run this scanner only against assets you own or have explicit permission to assess. Prefer local fixtures, intentionally vulnerable labs, staging systems, and other controlled targets for development and reproduction.
+
+The default CLI profile is intentionally passive. Active payload testing requires an explicit active profile, and generic browser form submission/clicking remains opt-in even in the fully authorized profile.
+
+## Reporting a scanner vulnerability
+
+Do **not** publish exploit details, credentials, cookies, tokens, browser storage, traces, screenshots, or vulnerable target data in a public issue.
+
+Use GitHub's private vulnerability reporting / Security Advisory flow for this repository when available. If that private channel is unavailable, open a minimal public issue asking the maintainer for a private security contact channel **without including exploit details or secrets**.
+
+A useful private report includes:
+
+- affected commit or release;
+- component and security boundary affected;
+- minimal reproduction against a local/mock target when possible;
+- expected versus observed behavior;
+- impact and prerequisites;
+- whether reports, browser artifacts, credentials, cookies, tokens, or storage state may be exposed.
+
+## Security-sensitive scanner defects
+
+Treat these as security issues even when they do not directly compromise the host running the scanner:
+
+- scope bypass or off-target requests;
+- DNS rebinding or redirect scope bypass;
+- unexpected state-changing browser actions;
+- authentication/session crossover between actors or worker threads;
+- leakage of credentials, cookies, tokens, traces, screenshots, reports, or storage-state files;
+- report injection or unsafe rendering;
+- a failed scan being reported as successful;
+- default behavior that performs active testing without explicit operator intent.
+
+## Evidence and verification semantics
+
+- `verified`: stronger reproducible proof was captured by the implemented verifier.
+- `detected`: a concrete signal was observed, but exploit confirmation is incomplete.
+- `suspected`: behavior is noteworthy but insufficient for a confirmed finding.
+- `informational`: posture or inventory data, not exploit confirmation.
+- Failed, partial, blocked-auth, or indeterminate workflows must not be represented as completed verification.
+- Browser screenshots and traces are supporting evidence, not a substitute for deterministic authorization or exploit proof.
+
+## Authentication and artifact handling
+
+- Access-control verification should use isolated actor state and explicit actor comparison.
+- Placeholder credentials in `config/default_config.yaml` reference environment variables; never commit real secrets.
+- Browser storage state, traces, screenshots, replay records, and reports can contain sensitive material. The scanner applies restrictive file permissions where supported, but operators remain responsible for secure storage, retention, and deletion.
+- A login/refresh failure degrades the affected scenario instead of being silently treated as success.
+
+## Scope controls
+
+Outbound HTTP(S) traffic is checked against the configured target/scope policy, including redirect targets and resolved IP addresses. Private, loopback, link-local, multicast, unspecified, and reserved addresses are rejected unless private-target access is explicitly permitted for an authorized local/private assessment.
+
+Browser traffic is intercepted at the browser-context layer as an additional enforcement boundary. Service Workers are blocked in hardened browser contexts so they cannot bypass request interception.

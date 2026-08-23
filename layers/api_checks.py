@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 from core.models import Finding
+from layers.auth_token_checks import AuthTokenPostureScanner
+from layers.xml_checks import XMLParserProbeScanner
 
 
 class APIPostureScanner:
@@ -11,12 +13,30 @@ class APIPostureScanner:
         self.layer_config = config.get("passive_checks", {}).get("api", {})
         self.enabled = bool(self.layer_config.get("enabled", True))
         self.skipped: List[str] = []
+        self.auth_token_meta: Dict[str, Any] = {}
+        self.xml_probe_meta: Dict[str, Any] = {}
 
     def scan(self, api_engine) -> Tuple[List[Finding], Dict[str, Any]]:
+        findings: List[Finding] = []
         if not self.enabled:
             self.skipped.append("API posture checks are disabled by configuration.")
-            return [], self._meta(api_engine)
+        else:
+            findings.extend(self._scan_api_inventory(api_engine))
 
+        requester = getattr(api_engine, "requester", None)
+        auth_manager = getattr(requester, "auth_session_manager", None)
+        token_scanner = AuthTokenPostureScanner(self.config)
+        token_findings, self.auth_token_meta = token_scanner.scan(auth_manager)
+        findings.extend(token_findings)
+        self.skipped.extend(self.auth_token_meta.get("skipped", []))
+
+        xml_scanner = XMLParserProbeScanner(requester, self.config)
+        xml_findings, self.xml_probe_meta = xml_scanner.scan(api_engine)
+        findings.extend(xml_findings)
+        self.skipped.extend(self.xml_probe_meta.get("skipped", []))
+        return findings, self._meta(api_engine)
+
+    def _scan_api_inventory(self, api_engine) -> List[Finding]:
         findings: List[Finding] = []
         swagger = getattr(api_engine, "swagger_inventory", None) or {}
         graphql = getattr(api_engine, "graphql_inventory", None) or {}
@@ -37,9 +57,14 @@ class APIPostureScanner:
                         "base_url": swagger.get("base_url"),
                         "paths_total": swagger.get("paths_total"),
                         "operations_total": swagger.get("operations_total"),
+                        "surfaces_with_inputs": swagger.get("surfaces_with_inputs"),
+                        "input_locations": swagger.get("input_locations", {}),
                     },
                     remediation="Restrict public access to internal API specifications if they expose non-public operations.",
-                    reproduction={"method": "GET", "url": swagger.get("url", "")},
+                    reproduction={
+                        "method": "GET",
+                        "url": swagger.get("url", ""),
+                    },
                     verification_status="informational",
                     scanner_mode="api-passive",
                     reproducible=True,
@@ -84,6 +109,8 @@ class APIPostureScanner:
                     url=graphql.get("url", ""),
                     evidence={
                         "types_total": graphql.get("types_total"),
+                        "query_fields_total": graphql.get("query_fields_total"),
+                        "mutation_fields_total": graphql.get("mutation_fields_total"),
                         "status": graphql.get("status"),
                     },
                     remediation="Disable GraphQL introspection on production deployments when schema visibility is unnecessary.",
@@ -98,13 +125,41 @@ class APIPostureScanner:
                     target={"source": "graphql"},
                 )
             )
-
-        return findings, self._meta(api_engine)
+            findings.append(
+                Finding(
+                    plugin="api_posture",
+                    type="GraphQL Schema Inventory",
+                    title="GraphQL Root Operations Inventoried",
+                    category="api-surface",
+                    severity="INFO",
+                    confidence="HIGH",
+                    surface_id=f"api:graphql-schema:{graphql.get('url', '')}",
+                    url=graphql.get("url", ""),
+                    evidence={
+                        "query_fields": graphql.get("query_fields", [])[:25],
+                        "mutation_fields": graphql.get("mutation_fields", [])[:25],
+                        "query_fields_total": graphql.get("query_fields_total", 0),
+                        "mutation_fields_total": graphql.get("mutation_fields_total", 0),
+                    },
+                    remediation="Review exposed root operations and ensure authorization is enforced in resolvers rather than inferred from schema visibility.",
+                    reproduction={"source": "graphql_introspection"},
+                    verification_status="informational",
+                    scanner_mode="api-passive",
+                    reproducible=True,
+                    target={"source": "graphql"},
+                    notes=[
+                        "The presence of mutation fields is inventory information, not a vulnerability by itself."
+                    ],
+                )
+            )
+        return findings
 
     def _meta(self, api_engine) -> Dict[str, Any]:
         return {
             "swagger_inventory": getattr(api_engine, "swagger_inventory", None),
             "graphql_inventory": getattr(api_engine, "graphql_inventory", None),
+            "auth_token_posture": self.auth_token_meta,
+            "xml_probe": self.xml_probe_meta,
             "errors": getattr(api_engine, "errors", []),
             "skipped": self.skipped,
         }

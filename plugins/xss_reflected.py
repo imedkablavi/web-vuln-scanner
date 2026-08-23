@@ -1,14 +1,12 @@
-import random
-import string
-from typing import List, Dict
-from html import unescape
-from .base import BasePlugin, TestCase, VerificationResult
+from __future__ import annotations
+
+import hashlib
+from typing import Dict, List
+
+from bs4 import BeautifulSoup
+
 from core.models import AttackSurface, Finding
-from core.utils import logger
-
-
-def _marker():
-    return "XSS123_" + "".join(random.choices(string.ascii_letters, k=6))
+from .base import BasePlugin, TestCase, VerificationResult
 
 
 class XSSReflectedPlugin(BasePlugin):
@@ -19,56 +17,138 @@ class XSSReflectedPlugin(BasePlugin):
     def enabled(cls, config: Dict) -> bool:
         return bool(config.get("enabled", False))
 
+    def max_tests_per_surface(self, config: Dict) -> int:
+        return max(1, int(config.get("max_tests_per_surface", 4)))
+
     def applicable(self, surface: AttackSurface) -> bool:
-        return bool(surface.params or surface.inputs)
+        return bool(surface.params or any(item.kind in self.supported_input_kinds for item in surface.inputs))
+
+    @staticmethod
+    def _active_input_supported(surface: AttackSurface, item) -> bool:
+        if item.kind != "body":
+            return True
+        path = str(getattr(item, "path", "") or "")
+        nested = path.startswith("/") and path.count("/") > 1
+        if not nested:
+            return True
+        content_type = str((surface.meta or {}).get("content_type", "") or "").lower()
+        body_format = str((surface.meta or {}).get("body_format", "") or "").lower()
+        return body_format == "json" or content_type.startswith("application/json") or "+json" in content_type
 
     def generate_tests(self, surface: AttackSurface, context: Dict) -> List[TestCase]:
-        max_payloads = self.config.get("max_payloads", 6)
+        targets = [(name, "query", name) for name in surface.params]
+        targets.extend(
+            (
+                item.name,
+                item.kind,
+                str(getattr(item, "path", "") or item.name),
+            )
+            for item in surface.inputs
+            if item.kind in self.supported_input_kinds
+            and self._active_input_supported(surface, item)
+        )
+        deduped = []
+        seen = set()
+        for name, kind, path in targets:
+            key = (kind, path or name)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((name, kind, path))
+
         tests: List[TestCase] = []
-        targets = list(surface.params.keys()) + [i.name for i in surface.inputs]
-        for name in targets[:max_payloads]:
-            marker = _marker()
-            payloads = [
-                marker,
-                f"'><script>window.__xss_marker='{marker}'</script>",
-                f"\\\"{marker}\\\"",
-            ]
-            for p in payloads:
+        for name, kind, input_path in deduped:
+            marker = hashlib.sha256(
+                f"{surface.id}:{name}:{kind}:{input_path}".encode("utf-8")
+            ).hexdigest()[:12]
+            element = f'<wvs-probe data-wvs="{marker}"></wvs-probe>'
+            for payload in (element, f'\">{element}'):
                 tests.append(
                     TestCase(
                         plugin=self.name,
                         surface_id=surface.id,
                         param=name,
-                        kind="query",
-                        payload=p,
+                        kind=kind,
+                        payload=payload,
+                        notes=f"markup-canary:{marker}",
+                        input_path=input_path if input_path != name else "",
                     )
                 )
-                if len(tests) >= max_payloads:
-                    break
-            if len(tests) >= max_payloads:
-                break
+                if len(tests) >= self.max_tests_per_surface(self.config):
+                    return tests
         return tests
 
+    @staticmethod
+    def _marker(testcase: TestCase) -> str:
+        prefix = "markup-canary:"
+        if testcase.notes and testcase.notes.startswith(prefix):
+            return testcase.notes[len(prefix):]
+        return ""
+
     def verify(self, testcase: TestCase, baseline, response, context: Dict) -> VerificationResult:
-        if not response:
-            return VerificationResult(False, "LOW", {}, {})
-        body = unescape(response.text or "")
-        marker = testcase.payload.replace("'><script>window.__xss_marker='", "").replace("'</script>", "").replace("\\\"", "").strip("'\"")
-        if marker and marker in body:
-            evidence = {"marker": marker, "param": testcase.param}
-            confidence = "MEDIUM"
-            return VerificationResult(True, confidence, evidence, {"param": testcase.param, "payload": testcase.payload}, severity="MEDIUM")
-        return VerificationResult(False, "LOW", {}, {})
+        if response is None:
+            return VerificationResult(False, "LOW", {}, {}, verification_status="not_reproducible")
+        marker = self._marker(testcase)
+        if not marker:
+            return VerificationResult(False, "LOW", {}, {}, verification_status="not_reproducible")
+
+        content_type = str(response.headers.get("Content-Type") or "").lower() if hasattr(response, "headers") else ""
+        body = response.text or ""
+        if "html" not in content_type and "<html" not in body.lower():
+            return VerificationResult(False, "LOW", {}, {}, verification_status="not_reproducible")
+
+        soup = BeautifulSoup(body, "html.parser")
+        injected = soup.find("wvs-probe", attrs={"data-wvs": marker})
+        if injected is None:
+            return VerificationResult(False, "LOW", {}, {}, verification_status="not_reproducible")
+
+        baseline_text = str((baseline or {}).get("text") or "") if isinstance(baseline, dict) else ""
+        if marker in baseline_text:
+            return VerificationResult(False, "LOW", {}, {}, verification_status="not_reproducible")
+
+        return VerificationResult(
+            True,
+            "HIGH",
+            {
+                "parameter": testcase.param,
+                "insertion_path": testcase.input_path,
+                "marker": marker,
+                "status": response.status_code,
+                "parsed_element": "wvs-probe",
+                "context": "html-markup",
+            },
+            {
+                "param": testcase.param,
+                "input_path": testcase.input_path,
+                "payload": testcase.payload,
+                "kind": testcase.kind,
+            },
+            severity="MEDIUM",
+            verification_status="detected",
+            rationale="The response parser reconstructed the injected canary as an HTML element. Script execution was not attempted or claimed.",
+        )
 
     def build_finding(self, testcase: TestCase, vres: VerificationResult, surface: AttackSurface) -> Finding:
         return Finding(
             plugin=self.name,
-            type="Reflected XSS",
+            type="Reflected HTML Injection",
+            title="Reflected Markup Injection Confirmed",
+            category="xss",
             severity=vres.severity,
             confidence=vres.confidence,
             surface_id=surface.id,
             url=surface.url,
             evidence=vres.evidence,
-            remediation="Encode untrusted data before rendering and use CSP.",
+            remediation="Encode untrusted values for the exact HTML context before rendering them. Add CSP as defense in depth, not as the primary fix.",
             reproduction=vres.reproduction,
+            verification_status=vres.verification_status,
+            scanner_mode="safe-active-web",
+            reproducible=True,
+            target={
+                "source": surface.source,
+                "method": surface.method,
+                "parameter": testcase.param,
+                "insertion_path": testcase.input_path,
+            },
+            notes=[vres.rationale] if vres.rationale else [],
         )

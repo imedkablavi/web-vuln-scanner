@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   test:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -18,10 +19,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -30,34 +31,302 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install -e .[dev]
+          python -m pip install -e '.[dev]'
 
       - name: Compile source
-        run: python -m compileall -q core layers plugins workflows smoke main_v2.py
+        run: python -m compileall -q core layers plugins policies workflows smoke main_v2.py
 
       - name: Lint critical errors
         run: ruff check . --select E9,F63,F7,F82
 
-      - name: Unit tests
-        run: python -m pytest -q
+      - name: Unit tests with coverage gate
+        run: |
+          python -m pytest -q \
+            --cov=core --cov=layers --cov=plugins --cov=workflows \
+            --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=35
 
       - name: Verify helper CLIs
         run: |
           python -m core.scan_profiles passive --config config/default_config.yaml --output /tmp/passive.yaml
           python -m core.scan_profiles safe-active --config config/default_config.yaml --output /tmp/safe-active.yaml
+          web-vuln-scanner --help
+          web-vuln-scanner scan --help
+          web-vuln-scanner version
+          web-vuln-scanner checks
+          web-vuln-scanner checks --json >/tmp/checks.json
+          web-vuln-scanner profiles
+          web-vuln-scanner profiles --json >/tmp/profiles.json
+          web-vuln-scanner validate-config config/default_config.yaml
+          web-vuln-scanner doctor
+          web-vuln-profile --help
+          web-vuln-sarif --help
+          web-vuln-diff --help
+          web-vuln-har --help
+          web-vuln-postman --help
+          web-vuln-wsdl --help
 
-  smoke:
+  dependency-audit:
+    name: Dependency audit and SBOM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
           cache: pip
-      - run: |
+      - name: Audit pinned runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'pip-audit>=2.10.1,<3'
+          python -m pip_audit -r requirements.txt
+          python -m pip_audit -r requirements.txt -f cyclonedx-json -o sbom.cdx.json
+      - name: Upload dependency SBOM
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: dependency-sbom
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Build, install, and run wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'build>=1.5,<2'
+          python -m build
+      - name: Install wheel in clean virtualenv
+        run: |
+          python -m venv /tmp/wheel-test
+          /tmp/wheel-test/bin/python -m pip install --upgrade pip
+          /tmp/wheel-test/bin/python -m pip install dist/*.whl
+          /tmp/wheel-test/bin/web-vuln-scanner --help
+          /tmp/wheel-test/bin/web-vuln-scanner scan --help
+          /tmp/wheel-test/bin/web-vuln-scanner version
+          /tmp/wheel-test/bin/web-vuln-scanner checks
+          /tmp/wheel-test/bin/web-vuln-scanner checks --json >/tmp/wheel-checks.json
+          /tmp/wheel-test/bin/web-vuln-scanner profiles
+          /tmp/wheel-test/bin/web-vuln-scanner profiles --json >/tmp/wheel-profiles.json
+          /tmp/wheel-test/bin/web-vuln-scanner validate-config
+          /tmp/wheel-test/bin/web-vuln-scanner doctor
+          /tmp/wheel-test/bin/web-vuln-profile --help
+          /tmp/wheel-test/bin/web-vuln-sarif --help
+          /tmp/wheel-test/bin/web-vuln-diff --help
+          /tmp/wheel-test/bin/web-vuln-har --help
+          /tmp/wheel-test/bin/web-vuln-postman --help
+          /tmp/wheel-test/bin/web-vuln-wsdl --help
+      - name: Verify packaged runtime resources
+        run: |
+          cd /tmp
+          /tmp/wheel-test/bin/python - <<'PY'
+          from importlib import metadata, resources
+          import yaml
+          from layers.safe_template_checks import validate_safe_template
+
+          expected = {
+              "apache-server-status.yaml",
+              "go-expvar-exposed.yaml",
+              "nginx-stub-status.yaml",
+              "phpinfo-exposed.yaml",
+          }
+          root = resources.files("config").joinpath("safe_templates")
+          if not root.is_dir():
+              raise SystemExit("packaged safe_templates directory is missing")
+          found = {item.name for item in root.iterdir() if item.is_file()}
+          missing = sorted(expected - found)
+          if missing:
+              raise SystemExit(f"packaged safe templates missing: {missing}")
+          for name in sorted(expected):
+              raw = yaml.safe_load(root.joinpath(name).read_text(encoding="utf-8")) or {}
+              validate_safe_template(raw)
+
+          paths = [str(item).replace("\\", "/") for item in (metadata.files("web-vuln-scanner") or [])]
+          forbidden = [
+              path for path in paths
+              if path.endswith("config/rbac_matrix.yaml")
+              or "/workflows/default/" in f"/{path}"
+              or "/smoke/" in f"/{path}"
+              or "/tests/" in f"/{path}"
+          ]
+          if forbidden:
+              raise SystemExit(f"test/fixture resources leaked into wheel: {forbidden}")
+          print(f"validated {len(expected)} live safe templates; runtime wheel is fixture-free")
+          PY
+      - name: Run installed wheel outside source tree
+        run: |
+          PORT=$(/tmp/wheel-test/bin/python - <<'PY'
+          import socket
+          with socket.socket() as sock:
+              sock.bind(("127.0.0.1", 0))
+              print(sock.getsockname()[1])
+          PY
+          )
+          /tmp/wheel-test/bin/python "$GITHUB_WORKSPACE/smoke/mock_server.py" --port "$PORT" >/tmp/wheel-mock.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          /tmp/wheel-test/bin/python - <<PY
+          import time, requests
+          url = "http://127.0.0.1:${PORT}/clean"
+          for _ in range(50):
+              try:
+                  if requests.get(url, timeout=0.5).status_code == 200:
+                      break
+              except Exception:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit("wheel test server did not start")
+          PY
+          cd /tmp
+          set +e
+          /tmp/wheel-test/bin/web-vuln-scanner "http://127.0.0.1:${PORT}/clean" --profile passive --output /tmp/wheel-report
+          CODE=$?
+          set -e
+          test "$CODE" -eq 1
+          test -s /tmp/wheel-report/scan_report.json
+          test -s /tmp/wheel-report/scan_report.html
+          /tmp/wheel-test/bin/web-vuln-diff /tmp/wheel-report/scan_report.json /tmp/wheel-report/scan_report.json --fail-on-new
+          /tmp/wheel-test/bin/python - <<PY
+          import json
+          from pathlib import Path
+          port = ${PORT}
+          payload = {
+              "log": {
+                  "version": "1.2",
+                  "creator": {"name": "ci"},
+                  "entries": [{
+                      "request": {
+                          "method": "POST",
+                          "url": f"http://127.0.0.1:{port}/api/item?id=7&token=har-query-secret",
+                          "headers": [
+                              {"name": "Authorization", "value": "Bearer har-header-secret"},
+                              {"name": "Content-Type", "value": "application/json"},
+                          ],
+                          "postData": {
+                              "mimeType": "application/json",
+                              "text": "{\"password\":\"har-body-secret\",\"name\":\"alice\"}",
+                          },
+                      }
+                  }],
+              }
+          }
+          Path("/tmp/sample.har").write_text(json.dumps(payload), encoding="utf-8")
+          PY
+          /tmp/wheel-test/bin/web-vuln-har /tmp/sample.har \
+            --target "http://127.0.0.1:${PORT}" --allow-private \
+            --output /tmp/har-inventory.json
+          test -s /tmp/har-inventory.json
+          ! grep -q 'har-query-secret' /tmp/har-inventory.json
+          ! grep -q 'har-header-secret' /tmp/har-inventory.json
+          ! grep -q 'har-body-secret' /tmp/har-inventory.json
+
+  smoke:
+    name: Authorized local smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install scanner, QA tools, and Chromium
+        run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-      - name: Local smoke target
-        run: python smoke/run_smoke.py
+          python -m pip install -e '.[dev]'
+          python -m playwright install --with-deps chromium
+      - name: Local smoke target with integration coverage
+        run: |
+          rm -f .coverage .coverage.*
+          SMOKE_COVERAGE=1 python smoke/run_smoke.py
+          python -m coverage run --parallel-mode --source=core,layers,plugins,workflows smoke/feature_probe_smoke.py
+          web-vuln-diff smoke_out/scan_report.json smoke_out/scan_report.json --fail-on-new --fail-on-regression
+          python -m coverage combine
+          python -m coverage report
+          python -m coverage xml -o smoke_out/integration-coverage.xml
+      - name: Assert test credentials never persist
+        run: |
+          python smoke/assert_no_secrets.py smoke_out \
+            lowpass peerpass adminpass apipass demo-pass mock-debug-key
+          test -z "$(find /tmp -maxdepth 1 -type d -name 'webvuln-auth-*' -print -quit)"
       - name: Convert smoke report to SARIF
         run: python -m core.sarif smoke_out/scan_report.json --output smoke_out/scan_report.sarif
+      - name: Assert SARIF remains secret-free
+        run: |
+          python smoke/assert_no_secrets.py smoke_out/scan_report.sarif \
+            lowpass peerpass adminpass apipass demo-pass mock-debug-key
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: smoke-evidence
+          path: smoke_out/
+          if-no-files-found: warn
+          retention-days: 7
+
+  docker:
+    name: Docker build and end-to-end runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build image
+        run: docker build -t web-vuln-scanner:ci .
+      - name: Verify packaged CLI and fixture-free non-root runtime
+        run: |
+          docker run --rm web-vuln-scanner:ci --help
+          docker run --rm --entrypoint sh web-vuln-scanner:ci -c '
+            set -eu
+            test "$(id -u)" != "0"
+            touch /app/.write-test && rm /app/.write-test
+            test ! -e /app/smoke
+            test ! -e /app/tests
+            python3 - <<"PY"
+          from importlib import metadata
+          paths = [str(item).replace("\\", "/") for item in (metadata.files("web-vuln-scanner") or [])]
+          forbidden = [
+              path for path in paths
+              if path.endswith("config/rbac_matrix.yaml")
+              or "/workflows/default/" in f"/{path}"
+              or "/smoke/" in f"/{path}"
+              or "/tests/" in f"/{path}"
+          ]
+          if forbidden:
+              raise SystemExit(f"fixture resources leaked into runtime image: {forbidden}")
+          PY
+          '
+      - name: Run passive scan inside container
+        run: |
+          docker run --rm --entrypoint sh web-vuln-scanner:ci -c '
+            set -eu
+            mkdir -p /tmp/site
+            printf "%s\n" "<html><head><title>runtime</title></head><body>runtime e2e</body></html>" >/tmp/site/index.html
+            python3 -m http.server 8765 --bind 127.0.0.1 --directory /tmp/site >/tmp/http.log 2>&1 &
+            PID=$!
+            trap "kill $PID 2>/dev/null || true" EXIT
+            python3 - <<"PY"
+          import time, requests
+          url = "http://127.0.0.1:8765/"
+          for _ in range(50):
+              try:
+                  if requests.get(url, timeout=0.5).status_code == 200:
+                      break
+              except Exception:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit("docker HTTP test server did not start")
+          PY
+            set +e
+            web-vuln-scanner http://127.0.0.1:8765/ --profile passive --output /tmp/docker-report
+            CODE=$?
+            set -e
+            test "$CODE" -eq 1
+            test -s /tmp/docker-report/scan_report.json
+            test -s /tmp/docker-report/scan_report.html
+          '

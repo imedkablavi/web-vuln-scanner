@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import ssl
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
@@ -58,17 +58,35 @@ class DNSTLSScanner:
     def _tls_inventory(self, scheme: str, host: str, port: int | None) -> Dict[str, Any]:
         if scheme.lower() != "https":
             return {"enabled": False, "reason": "plaintext_http"}
-        tls_inventory: Dict[str, Any] = {"enabled": True, "host": host, "port": port or 443}
+        tls_inventory: Dict[str, Any] = {
+            "enabled": True,
+            "host": host,
+            "port": port or 443,
+            "verified": None,
+        }
         context = ssl.create_default_context()
         try:
             with socket.create_connection((host, port or 443), timeout=self.timeout) as sock:
                 with context.wrap_socket(sock, server_hostname=host) as wrapped:
                     cert = wrapped.getpeercert()
+                    tls_inventory["verified"] = True
                     tls_inventory["version"] = wrapped.version()
                     tls_inventory["cipher"] = wrapped.cipher()
                     tls_inventory["subject"] = cert.get("subject", [])
                     tls_inventory["issuer"] = cert.get("issuer", [])
                     tls_inventory["not_after"] = cert.get("notAfter")
+        except ssl.SSLCertVerificationError as exc:
+            # A certificate verification failure is a property of the target,
+            # not an execution failure of the scanner. Keep the message/code
+            # but do not add it to self.errors, which would mark the whole scan
+            # partial.
+            tls_inventory["verified"] = False
+            tls_inventory["verification_error"] = str(
+                getattr(exc, "verify_message", "") or str(exc)
+            )
+            verify_code = getattr(exc, "verify_code", None)
+            if verify_code is not None:
+                tls_inventory["verification_code"] = int(verify_code)
         except Exception as exc:
             self.errors.append({"kind": "tls", "host": host, "error": str(exc)})
         return tls_inventory
@@ -126,7 +144,39 @@ class DNSTLSScanner:
                 )
             ]
 
-        findings = [
+        findings: List[Finding] = []
+        if inventory.get("verified") is False:
+            findings.append(
+                Finding(
+                    plugin="dns_tls",
+                    type="TLS Certificate Validation Failed",
+                    title="TLS Certificate Could Not Be Validated",
+                    category="tls-posture",
+                    severity="MEDIUM",
+                    confidence="HIGH",
+                    surface_id=f"tls:certificate-validation:{parsed.netloc}",
+                    url=f"{parsed.scheme}://{parsed.netloc}",
+                    evidence={
+                        "verification_error": inventory.get("verification_error", "certificate verification failed"),
+                        "verification_code": inventory.get("verification_code"),
+                        "host": inventory.get("host"),
+                        "port": inventory.get("port"),
+                    },
+                    remediation="Present a certificate chain trusted by clients, valid for the requested hostname and current time window.",
+                    reproduction={
+                        "kind": "verified_tls_handshake",
+                        "host": inventory.get("host"),
+                        "port": inventory.get("port"),
+                    },
+                    verification_status="detected",
+                    scanner_mode="external-passive",
+                    reproducible=True,
+                    target={"source": "dns-tls", "host": parsed.netloc},
+                )
+            )
+            return findings
+
+        findings.append(
             Finding(
                 plugin="dns_tls",
                 type="TLS Inventory",
@@ -144,20 +194,26 @@ class DNSTLSScanner:
                 reproducible=True,
                 target={"source": "dns-tls", "host": parsed.netloc},
             )
-        ]
+        )
         not_after = inventory.get("not_after")
         if not_after:
             try:
-                expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
-                days_remaining = (expires - datetime.utcnow()).days
+                expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                days_remaining = (expires - datetime.now(timezone.utc)).days
                 if days_remaining < 14:
                     findings.append(
                         Finding(
                             plugin="dns_tls",
                             type="TLS Certificate Expiry Window",
-                            title="TLS Certificate Expires Soon",
+                            title="TLS Certificate Expires Soon" if days_remaining >= 0 else "TLS Certificate Has Expired",
                             category="tls-posture",
-                            severity="MEDIUM" if days_remaining < 7 else "LOW",
+                            severity=(
+                                "HIGH"
+                                if days_remaining < 0
+                                else "MEDIUM"
+                                if days_remaining < 7
+                                else "LOW"
+                            ),
                             confidence="HIGH",
                             surface_id=f"tls:expiry:{parsed.netloc}",
                             url=f"{parsed.scheme}://{parsed.netloc}",

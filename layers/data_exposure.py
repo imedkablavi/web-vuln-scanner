@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Tuple
 from urllib.parse import urljoin, urlparse
 
 from core.models import Finding
+from core.redaction import fingerprint_secret, redact_text
 from core.utils import logger, normalize_url
 
 
@@ -17,7 +18,13 @@ DEFAULT_PROBE_PATHS = [
 ]
 
 SENSITIVE_PATTERNS = [
-    (re.compile(r"(?i)(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*[\"']?[^\"'\s]{4,}"), "credential_assignment"),
+    (
+        re.compile(
+            r"(?i)(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*"
+            r"[\"']?[^\"'\s]{4,}"
+        ),
+        "credential_assignment",
+    ),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private_key_block"),
 ]
 
@@ -30,19 +37,26 @@ class DataExposureScanner:
         self.enabled = bool(self.layer_config.get("enabled", True))
         self.max_probe_paths = int(self.layer_config.get("max_probe_paths", 6))
         self.probe_paths = list(self.layer_config.get("probe_paths", DEFAULT_PROBE_PATHS))
-        self.inspect_observed_urls = bool(self.layer_config.get("inspect_observed_urls", True))
+        self.inspect_observed_urls = bool(
+            self.layer_config.get("inspect_observed_urls", True)
+        )
         self.errors: List[Dict[str, Any]] = []
         self.skipped: List[str] = []
         self.probed_urls: List[str] = []
 
-    def scan(self, target: str, observed_urls: List[str]) -> Tuple[List[Finding], Dict[str, Any]]:
+    def scan(
+        self, target: str, observed_urls: List[str]
+    ) -> Tuple[List[Finding], Dict[str, Any]]:
         if not self.enabled:
             self.skipped.append("Data exposure checks are disabled by configuration.")
             return [], self._meta()
 
         findings: List[Finding] = []
         base_url = self._origin(target)
-        probe_urls = [urljoin(base_url + "/", path.lstrip("/")) for path in self.probe_paths[: self.max_probe_paths]]
+        probe_urls = [
+            urljoin(base_url + "/", path.lstrip("/"))
+            for path in self.probe_paths[: self.max_probe_paths]
+        ]
         inventory = list(dict.fromkeys(probe_urls))
         if self.inspect_observed_urls:
             inventory.extend(
@@ -83,6 +97,8 @@ class DataExposureScanner:
             "status": response.status_code,
             "headers": headers,
             "content_type": headers.get("content-type", ""),
+            # Raw response text is kept in memory only long enough to classify
+            # the response. Persistence paths below always redact first.
             "text": response.text or "",
             "path": urlparse(url).path or "/",
         }
@@ -99,7 +115,9 @@ class DataExposureScanner:
             matched_kind = "env_file"
         elif path.endswith((".zip", ".tar", ".bak", ".old")):
             matched_kind = "backup_file"
-        elif path.endswith("config.json") and ("debug" in body.lower() or "password" in body.lower()):
+        elif path.endswith("config.json") and (
+            "debug" in body.lower() or "password" in body.lower()
+        ):
             matched_kind = "debug_config"
         if not matched_kind:
             return []
@@ -109,7 +127,9 @@ class DataExposureScanner:
                 type="Exposed File or Backup",
                 title="Exposed Backup or Configuration Resource",
                 category="data-exposure",
-                severity="HIGH" if matched_kind in {"git_head", "env_file"} else "MEDIUM",
+                severity="HIGH"
+                if matched_kind in {"git_head", "env_file"}
+                else "MEDIUM",
                 confidence="HIGH",
                 surface_id=f"data:{snapshot['url']}",
                 url=snapshot["url"],
@@ -117,9 +137,14 @@ class DataExposureScanner:
                     "matched_kind": matched_kind,
                     "path": snapshot["path"],
                     "content_type": snapshot["content_type"],
-                    "response_excerpt": re.sub(r"\s+", " ", body).strip()[:240],
+                    "response_excerpt": redact_text(
+                        re.sub(r"\s+", " ", body).strip(), max_length=240
+                    ),
                 },
-                remediation="Remove backup/debug artifacts from the web root and block direct access to configuration material.",
+                remediation=(
+                    "Remove backup/debug artifacts from the web root and block "
+                    "direct access to configuration material."
+                ),
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="data-exposure",
@@ -136,7 +161,14 @@ class DataExposureScanner:
         for pattern, signal in SENSITIVE_PATTERNS:
             match = pattern.search(body)
             if match:
-                hits.append({"signal": signal, "excerpt": match.group(0)[:120]})
+                raw_match = match.group(0)
+                hits.append(
+                    {
+                        "signal": signal,
+                        "match_sha256": fingerprint_secret(raw_match),
+                        "redacted_excerpt": redact_text(raw_match, max_length=120),
+                    }
+                )
         if not hits:
             return []
         return [
@@ -149,11 +181,11 @@ class DataExposureScanner:
                 confidence="HIGH",
                 surface_id=f"sensitive:{snapshot['url']}",
                 url=snapshot["url"],
-                evidence={
-                    "path": snapshot["path"],
-                    "hits": hits,
-                },
-                remediation="Avoid returning secrets or credential-like values in HTTP responses and debug endpoints.",
+                evidence={"path": snapshot["path"], "hits": hits},
+                remediation=(
+                    "Avoid returning secrets or credential-like values in HTTP "
+                    "responses and debug endpoints."
+                ),
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="data-exposure",

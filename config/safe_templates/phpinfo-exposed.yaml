@@ -1,0 +1,21 @@
+id: phpinfo-exposed
+info:
+  name: Public phpinfo Page Exposed
+  severity: medium
+  confidence: high
+  category: information-disclosure
+  description: A public phpinfo page can disclose runtime, module, path, and environment details.
+  remediation: Remove phpinfo pages from deployed environments or restrict them to trusted administrative access.
+request:
+  method: GET
+  path: /phpinfo.php
+matchers_condition: all
+matchers:
+  - type: status
+    values: [200]
+  - type: word
+    part: body
+    condition: all
+    values:
+      - PHP Version
+      - phpinfo()

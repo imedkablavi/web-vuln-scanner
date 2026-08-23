@@ -1,17 +1,41 @@
 scanner:
   target: ""
+  profile: passive
+  strategy: balanced
+
   scope:
     allowlist: []
-    blocklist: ["logout", "delete", "remove"]
-    include_domains: ["*.example.com"]
+    include_domains: []
     exclude_paths: ["/logout", "/signout"]
+    allow_private: false
+    resolve_dns: true
     max_depth: 2
+
   crawler:
     max_depth: 3
     max_urls: 2000
     max_url_length: 2048
-    respect_robots: false
-    dedup: "fingerprint"
+    discovery_files:
+      robots_txt: true
+      sitemap_xml: true
+      max_sitemap_urls: 500
+      max_sitemap_files: 10
+      max_file_bytes: 2097152
+    site_map:
+      enabled: true
+      output_file: "site_map.json"
+      max_entries: 5000
+    javascript_discovery:
+      enabled: true
+      max_scripts: 10
+      max_script_bytes: 250000
+      max_endpoints: 100
+    har_seed:
+      enabled: false
+      files: []
+      max_entries: 5000
+      active_tests: false
+
   concurrency:
     threads: 5
     per_host_concurrency: 2
@@ -19,127 +43,136 @@ scanner:
     timeout: 10
     max_retries: 3
     global_timeout_seconds: 600
+
   plugin_contract: "v2"
   browser_enabled: false
   crawler_enabled: true
   debug: false
+
   browser:
     headless: true
     slow_mo: 0
     capture_trace: true
     capture_screenshots: true
+    capture_auth_trace: false
+    capture_auth_screenshots: false
+    retain_storage_state: false
+    auth_timeout_seconds: 30
+    xss_verification:
+      enabled: false
+      max_tests: 3
+      timeout_ms: 8000
     interactions:
+      enabled: false
+      submit_forms: false
       scroll: true
-      click_selectors: ["button[type=submit]", "[role=button]"]
+      click_selectors: []
     wait:
       network_idle_ms: 1500
     max_pages: 20
     max_actions_per_page: 15
+
   auth:
     cookies: {}
     headers: {}
+
   auth_verification:
     enabled: false
     default_comparison_mode: semantic
     baseline_actor_id: low_user
     authenticated_crawl:
       enabled: false
-      actor_ids: ["low_user"]
+      actor_ids: []
     actors:
       - actor_id: low_user
         display_name: Low Privilege User
         auth_type: cookie
         role: low
-        notes:
-          - "Example actor. Provide authorized test credentials through environment variables."
-        enabled: true
+        enabled: false
         auth:
           auth_scheme: form_login
-          login_url: "http://target.local/login"
-          verify_url: "http://target.local/dashboard"
+          login_url: ""
+          verify_url: ""
           username_env: "LOW_USER_USERNAME"
           password_env: "LOW_USER_PASSWORD"
-          success_indicators: ["Logout", "/dashboard"]
-          failure_indicators: ["Invalid credentials", "/login"]
+          success_indicators: []
+          failure_indicators: []
           session:
-            cookie_names: ["session"]
-            csrf_cookie_names: ["csrf"]
+            cookie_names: []
+            csrf_cookie_names: []
             refresh:
-              enabled: true
+              enabled: false
               strategy: relogin
               pre_expiry_seconds: 30
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
+
       - actor_id: peer_user
         display_name: Peer User
         auth_type: cookie
         role: low
-        notes:
-          - "Example actor. Provide authorized test credentials through environment variables."
-        enabled: true
+        enabled: false
         auth:
           auth_scheme: browser_form_login
-          login_url: "http://target.local/login"
-          browser_login_url: "http://target.local/login"
+          login_url: ""
+          browser_login_url: ""
           use_browser: true
           browser_required: false
-          verify_url: "http://target.local/dashboard"
+          verify_url: ""
           username_env: "PEER_USER_USERNAME"
           password_env: "PEER_USER_PASSWORD"
-          username_selector: 'input[name="username"]'
-          password_selector: 'input[name="password"]'
-          submit_selector: 'button[type="submit"]'
-          success_selector: 'a[href="/logout"]'
-          success_indicators: ["Logout", "/dashboard"]
-          failure_indicators: ["Invalid credentials", "/login"]
+          username_selector: ""
+          password_selector: ""
+          submit_selector: ""
+          success_selector: ""
+          success_indicators: []
+          failure_indicators: []
           session:
-            cookie_names: ["session"]
-            csrf_cookie_names: ["csrf"]
+            cookie_names: []
+            csrf_cookie_names: []
             refresh:
-              enabled: true
+              enabled: false
               strategy: relogin
               pre_expiry_seconds: 30
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
+
       - actor_id: admin_user
         display_name: Admin User
         auth_type: cookie
         role: admin
-        notes:
-          - "Example actor. Provide authorized test credentials through environment variables."
-        enabled: true
+        enabled: false
         auth:
           auth_scheme: form_login
-          login_url: "http://target.local/login"
-          verify_url: "http://target.local/dashboard"
+          login_url: ""
+          verify_url: ""
           username_env: "ADMIN_USER_USERNAME"
           password_env: "ADMIN_USER_PASSWORD"
-          success_indicators: ["Logout", "/dashboard"]
-          failure_indicators: ["Invalid credentials", "/login"]
+          success_indicators: []
+          failure_indicators: []
           session:
-            cookie_names: ["session"]
-            csrf_cookie_names: ["csrf"]
+            cookie_names: []
+            csrf_cookie_names: []
             refresh:
-              enabled: true
+              enabled: false
               strategy: relogin
               pre_expiry_seconds: 30
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
+
       - actor_id: api_user
         display_name: API User
         auth_type: bearer
         role: api
         enabled: false
-        notes:
-          - "Example bearer actor. Use only on authorized test APIs."
         auth:
           auth_scheme: bearer_with_refresh
-          token_url: "http://target.local/api/login"
-          refresh_url: "http://target.local/api/refresh"
-          verify_url: "http://target.local/api/profile"
+          token_url: ""
+          refresh_url: ""
+          verify_url: ""
           username_env: "API_USER_USERNAME"
           password_env: "API_USER_PASSWORD"
           access_token_json_path: "access_token"
@@ -149,26 +182,75 @@ scanner:
             Authorization: "Bearer {access_token}"
           session:
             refresh:
-              enabled: true
+              enabled: false
               strategy: refresh_token
               pre_expiry_seconds: 10
               retry_on_401: true
               max_attempts: 1
               relogin_on_failure: true
-  rbac_matrix_file: "config/rbac_matrix.yaml"
+
+  rbac_matrix_file: ""
+
   workflows:
     enabled: false
-    directory: "workflows/default"
+    directory: ""
     files: []
     replay_verified_only: true
+
+  active_checks:
+    web:
+      enabled: false
+      max_urls: 10
+      max_params_per_url: 3
+      max_requests: 50
+      ssti: true
+      crlf: true
+      trace: true
+      ssrf_same_origin: true
+
+    templates:
+      enabled: false
+      include_builtin: true
+      directory: ""
+      files: []
+      max_templates: 10
+      max_requests: 10
+      max_body_bytes: 131072
+
+    xml:
+      enabled: false
+      max_requests: 3
+
+  attack_policy:
+    skip_parameters:
+      - csrf
+      - csrf_token
+      - _csrf
+      - authenticity_token
+      - password
+      - passwd
+      - token
+      - access_token
+      - refresh_token
+      - id_token
+    skip_parameter_patterns: []
+
+  checkpoint:
+    enabled: false
+    path: ""
+    resume: false
+    flush_every: 10
+    keep_completed: false
+
   plugins:
     sqli:
-      enabled: true
+      enabled: false
       max_tests_per_surface: 3
       time_based: false
       min_length_delta_ratio: 0.05
+
     business_logic:
-      enabled: true
+      enabled: false
       idor:
         id_param_regex: "(^id$|_id$|Id$|doc)"
         numeric_delta: [-1, 1, 10]
@@ -176,26 +258,40 @@ scanner:
         min_length_delta_ratio: 0.05
         max_tests_per_surface: 3
         allow_uuid: false
+
     xss_reflected:
       enabled: false
-    lfi:
-      enabled: false
-    cmd_injection:
-      enabled: false
+      max_tests_per_surface: 4
+
     open_redirect:
       enabled: false
+      max_tests_per_surface: 2
+
+    lfi:
+      enabled: false
+
+    cmd_injection:
+      enabled: false
+
   output:
     format: ["json", "html"]
     file: "scan_report"
     directory: "reports"
+
   api:
     swagger_url: ""
     graphql_url: ""
+
   passive_checks:
     web:
       enabled: true
       max_urls: 25
       origin_probe: "https://audit.invalid"
+
+    auth_tokens:
+      enabled: true
+      max_lifetime_seconds: 86400
+
     data_exposure:
       enabled: true
       max_probe_paths: 5
@@ -206,20 +302,25 @@ scanner:
         - "/.git/HEAD"
         - "/backup.zip"
         - "/debug/config.json"
+
     api:
       enabled: true
+
     dns_tls:
       enabled: true
       timeout: 3
+
   verified_only: false
   max_findings_per_plugin: 50
+
   request:
     timeouts:
       connect: 10
       read: 20
     max_retries: 3
-    user_agent_pool: []
+    max_redirects: 5
     follow_redirects: false
+
 logging:
   level: "INFO"
   file: "scanner.log"

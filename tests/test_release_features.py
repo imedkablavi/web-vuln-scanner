@@ -14,6 +14,8 @@ from core.scanner import PluginRegistry
 def test_plugin_catalog_covers_registry():
     assert set(PluginRegistry.available) <= set(PLUGIN_CATALOG)
     assert get_plugin_metadata("sqli")["maturity"] == "stable"
+    assert get_plugin_metadata("xss_reflected")["maturity"] == "stable"
+    assert get_plugin_metadata("open_redirect")["maturity"] == "stable"
     assert get_plugin_metadata("cmd_injection")["maturity"] == "experimental"
 
 
@@ -22,15 +24,30 @@ def test_profiles_keep_experimental_plugins_disabled():
     for profile in PROFILES:
         rendered = apply_profile(config, profile)
         plugins = rendered["scanner"]["plugins"]
-        for name in ("xss_reflected", "lfi", "cmd_injection", "open_redirect"):
+        for name in ("lfi", "cmd_injection"):
             assert plugins[name]["enabled"] is False
 
 
-def test_passive_profile_disables_active_plugins():
+def test_passive_profile_disables_all_active_checks():
     rendered = apply_profile({"scanner": {}}, "passive")
-    assert rendered["scanner"]["profile"] == "passive"
-    assert rendered["scanner"]["plugins"]["sqli"]["enabled"] is False
-    assert rendered["scanner"]["plugins"]["business_logic"]["enabled"] is False
+    scanner = rendered["scanner"]
+    assert scanner["profile"] == "passive"
+    assert scanner["active_checks"]["web"]["enabled"] is False
+    for name in ("sqli", "business_logic", "xss_reflected", "open_redirect", "lfi", "cmd_injection"):
+        assert scanner["plugins"][name]["enabled"] is False
+
+
+def test_safe_active_enables_bounded_hardened_checks():
+    rendered = apply_profile({"scanner": {}}, "safe-active")
+    scanner = rendered["scanner"]
+    assert scanner["active_checks"]["web"]["enabled"] is True
+    assert scanner["active_checks"]["web"]["ssti"] is True
+    assert scanner["active_checks"]["web"]["crlf"] is True
+    assert scanner["active_checks"]["web"]["trace"] is True
+    assert scanner["plugins"]["sqli"]["enabled"] is True
+    assert scanner["plugins"]["xss_reflected"]["enabled"] is True
+    assert scanner["plugins"]["open_redirect"]["enabled"] is True
+    assert scanner["request"]["follow_redirects"] is False
 
 
 def test_unknown_profile_is_rejected():
@@ -42,7 +59,12 @@ def test_materialize_profile_preserves_unrelated_config(tmp_path):
     source = tmp_path / "config.yaml"
     destination = tmp_path / "generated.yaml"
     source.write_text(
-        yaml.safe_dump({"scanner": {"scope": {"include_domains": ["example.test"]}}, "logging": {"level": "INFO"}}),
+        yaml.safe_dump(
+            {
+                "scanner": {"scope": {"include_domains": ["example.test"]}},
+                "logging": {"level": "INFO"},
+            }
+        ),
         encoding="utf-8",
     )
     materialize_profile(source, "safe-active", destination)
@@ -82,8 +104,13 @@ def test_sarif_conversion_shape():
     run = sarif["runs"][0]
     assert run["tool"]["driver"]["name"] == "Web Vulnerability Scanner"
     assert len(run["tool"]["driver"]["rules"]) == 1
-    assert run["results"][0]["level"] == "warning"
-    assert run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "https://example.test/"
+    result = run["results"][0]
+    assert result["level"] == "warning"
+    location = result["locations"][0]["logicalLocations"][0]
+    assert location["kind"] == "web-target"
+    assert location["fullyQualifiedName"] == "https://example.test/"
+    assert "physicalLocation" not in result["locations"][0]
+    assert result["properties"]["targetUrl"] == "https://example.test/"
 
 
 def test_sarif_file_conversion(tmp_path):
@@ -92,4 +119,16 @@ def test_sarif_file_conversion(tmp_path):
     output = convert_report(source)
     assert output.name == "scan_report.sarif"
     data = json.loads(output.read_text(encoding="utf-8"))
-    assert data["runs"][0]["results"][0]["ruleId"].startswith("web-vuln-scanner/")
+    assert data["runs"][0]["results"][0]["ruleId"].startswith(
+        "web-vuln-scanner/"
+    )
+
+
+def test_sarif_does_not_copy_raw_evidence_secrets():
+    secret = "SARIF-SUPERSECRET-123456789"
+    report = _sample_report()
+    report["findings"][0]["evidence"] = {"DB_PASSWORD": secret}
+    report["findings"][0]["remediation"] = f"Rotate token={secret}"
+    serialized = json.dumps(report_to_sarif(report))
+    assert secret not in serialized
+    assert "***redacted***" in serialized

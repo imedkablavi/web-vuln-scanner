@@ -56,7 +56,7 @@ class ActorCredentials:
 @dataclass
 class RefreshPolicy:
     enabled: bool = False
-    strategy: str = "none"  # none / refresh_token / relogin / cookie_renewal
+    strategy: str = "none"
     pre_expiry_seconds: int = 30
     retry_on_401: bool = True
     max_attempts: int = 1
@@ -72,7 +72,7 @@ class RefreshPolicy:
 
 @dataclass
 class LoginFlow:
-    auth_scheme: str = "cookie"  # form_login / json_login / bearer_with_refresh / static_cookie / static_bearer / browser_state / none
+    auth_scheme: str = "cookie"
     login_method: str = ""
     login_url: str = ""
     token_url: str = ""
@@ -214,8 +214,15 @@ class AuthenticatedActorState:
 @dataclass
 class InputField:
     name: str
-    value: Optional[str] = None
-    kind: str = "query"  # query/body/path/header/cookie
+    value: Any = None
+    kind: str = "query"
+    path: str = ""
+    data_type: str = ""
+    required: bool = False
+
+    @property
+    def canonical_name(self) -> str:
+        return self.path or self.name
 
 
 @dataclass
@@ -230,7 +237,10 @@ class AttackSurface:
 
     def __post_init__(self):
         param_keys = sorted(self.params.keys())
-        input_names = sorted([inp.name for inp in self.inputs])
+        input_names = sorted(
+            f"{inp.kind}:{getattr(inp, 'path', '') or inp.name}"
+            for inp in self.inputs
+        )
         fingerprint = f"{self.method}:{self.url}:{param_keys}:{input_names}"
         self.id = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
 
@@ -239,7 +249,7 @@ class AttackSurface:
 class AuthActor:
     actor_id: str
     display_name: str
-    auth_type: str = "cookie"  # cookie / bearer / header / browser-state / none
+    auth_type: str = "cookie"
     login_flow: LoginFlow = field(default_factory=LoginFlow)
     credentials: ActorCredentials = field(default_factory=ActorCredentials)
     headers: Dict[str, str] = field(default_factory=dict)
@@ -349,7 +359,7 @@ class VerificationScenario:
 
 @dataclass
 class AccessControlEvidence:
-    decision: str  # no_issue / insufficient_evidence / suspected / verified
+    decision: str
     baseline_actor_id: str = ""
     comparison_actor_id: str = ""
     authorization_signal: str = ""
@@ -378,8 +388,8 @@ def infer_privilege_rank(value: str | None) -> int:
 class Finding:
     plugin: str
     type: str
-    severity: str  # LOW/MEDIUM/HIGH/CRITICAL
-    confidence: str  # LOW/MEDIUM/HIGH
+    severity: str
+    confidence: str
     surface_id: str
     url: str
     evidence: Dict[str, Any]

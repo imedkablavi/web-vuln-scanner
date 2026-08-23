@@ -1,0 +1,25 @@
+id: go-expvar-exposed
+info:
+  name: Go expvar Debug Endpoint Exposed
+  severity: medium
+  confidence: high
+  category: information-disclosure
+  description: Public expvar output can disclose command-line arguments, memory statistics, counters, and application internals.
+  remediation: Disable public access to /debug/vars or restrict the debug listener to trusted administrative networks.
+request:
+  method: GET
+  path: /debug/vars
+matchers_condition: all
+matchers:
+  - type: status
+    values: [200]
+  - type: header
+    name: Content-Type
+    values:
+      - application/json
+  - type: word
+    part: body
+    condition: all
+    values:
+      - '"cmdline"'
+      - '"memstats"'

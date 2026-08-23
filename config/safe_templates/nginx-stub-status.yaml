@@ -1,0 +1,23 @@
+id: nginx-stub-status-exposed
+info:
+  name: Nginx Stub Status Exposed
+  severity: medium
+  confidence: high
+  category: information-disclosure
+  description: Public stub_status output exposes connection and worker activity useful for infrastructure reconnaissance.
+  remediation: Restrict the Nginx status endpoint to trusted administrative networks or remove it from public routing.
+request:
+  method: GET
+  path: /nginx_status
+matchers_condition: all
+matchers:
+  - type: status
+    values: [200]
+  - type: word
+    part: body
+    condition: all
+    values:
+      - "Active connections:"
+      - "Reading:"
+      - "Writing:"
+      - "Waiting:"

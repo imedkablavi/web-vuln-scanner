@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -9,9 +10,12 @@ def make_config(**scope_overrides):
     scope = {
         "include_domains": ["example.com", "*.example.org"],
         "allow_private": False,
+        "resolve_dns": True,
     }
     scope.update(scope_overrides)
     return {
+        "target": "",
+        "crawler": {"max_url_length": 2048},
         "concurrency": {
             "delay": 0,
             "max_retries": 0,
@@ -23,11 +27,32 @@ def make_config(**scope_overrides):
             "timeouts": {"connect": 2, "read": 4},
             "max_retries": 0,
             "follow_redirects": False,
+            "max_redirects": 3,
         },
         "scope": scope,
         "auth": {"headers": {}, "cookies": {}},
         "auth_verification": {"enabled": False},
     }
+
+
+def fake_response(url, *, status=200, headers=None):
+    headers = dict(headers or {})
+    return SimpleNamespace(
+        status_code=status,
+        headers=headers,
+        text="ok",
+        url=url,
+        is_redirect=status in {301, 302, 303, 307, 308} and "Location" in headers,
+        is_permanent_redirect=status in {301, 308} and "Location" in headers,
+    )
+
+
+def allow_public_dns(monkeypatch, manager):
+    monkeypatch.setattr(
+        manager.scope_policy,
+        "_resolved_addresses",
+        lambda _host: iter(["93.184.216.34"]),
+    )
 
 
 def test_scope_allows_exact_and_wildcard_domains():
@@ -37,6 +62,7 @@ def test_scope_allows_exact_and_wildcard_domains():
     assert manager._host_allowed("example.org")
     assert not manager._host_allowed("example.net")
     assert not manager._host_allowed("badexample.org")
+    assert not manager._host_allowed("example.org.evil.test")
 
 
 def test_scope_blocks_private_and_reserved_ip_literals_by_default():
@@ -60,7 +86,7 @@ def test_send_rejects_non_http_schemes_before_network_call(monkeypatch):
     def fake_request(**kwargs):
         nonlocal called
         called = True
-        return SimpleNamespace(status_code=200, headers={}, text="ok", url=kwargs["url"])
+        return fake_response(kwargs["url"])
 
     monkeypatch.setattr(manager.session, "request", fake_request)
     with pytest.raises(RuntimeError, match="Unsupported URL scheme"):
@@ -70,16 +96,92 @@ def test_send_rejects_non_http_schemes_before_network_call(monkeypatch):
 
 def test_send_honors_per_call_timeout(monkeypatch):
     manager = RequestManager(make_config(include_domains=[]))
+    allow_public_dns(monkeypatch, manager)
     observed = {}
 
     def fake_request(**kwargs):
         observed.update(kwargs)
-        return SimpleNamespace(status_code=200, headers={}, text="ok", url=kwargs["url"])
+        return fake_response(kwargs["url"])
 
     monkeypatch.setattr(manager.session, "request", fake_request)
     response = manager.send("GET", "https://public.example", timeout=1.25)
     assert response.status_code == 200
     assert observed["timeout"] == 1.25
+    assert observed["allow_redirects"] is False
+
+
+def test_session_does_not_trust_environment_credentials():
+    manager = RequestManager(make_config(include_domains=[]))
+    assert manager.session.trust_env is False
+
+
+def test_each_worker_thread_gets_its_own_session():
+    manager = RequestManager(make_config(include_domains=[]))
+    session_ids = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(3)
+
+    def worker():
+        barrier.wait()
+        session_id = id(manager.session)
+        with lock:
+            session_ids.append(session_id)
+        barrier.wait()
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    main_session_id = id(manager.session)
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert len(set(session_ids + [main_session_id])) == 3
+
+
+def test_scoped_redirect_is_followed_only_after_validation(monkeypatch):
+    config = make_config(include_domains=["example.com"])
+    config["request"]["follow_redirects"] = True
+    manager = RequestManager(config)
+    allow_public_dns(monkeypatch, manager)
+    calls = []
+
+    def fake_request(**kwargs):
+        calls.append(kwargs["url"])
+        if len(calls) == 1:
+            return fake_response(
+                kwargs["url"],
+                status=302,
+                headers={"Location": "/next"},
+            )
+        return fake_response(kwargs["url"])
+
+    monkeypatch.setattr(manager.session, "request", fake_request)
+    response = manager.send("GET", "https://example.com/start")
+    assert response.url == "https://example.com/next"
+    assert calls == ["https://example.com/start", "https://example.com/next"]
+
+
+def test_off_scope_redirect_is_blocked_before_second_network_call(monkeypatch):
+    config = make_config(include_domains=["example.com"])
+    config["request"]["follow_redirects"] = True
+    manager = RequestManager(config)
+    allow_public_dns(monkeypatch, manager)
+    calls = []
+
+    def fake_request(**kwargs):
+        calls.append(kwargs["url"])
+        return fake_response(
+            kwargs["url"],
+            status=302,
+            headers={"Location": "https://evil.test/landing"},
+        )
+
+    monkeypatch.setattr(manager.session, "request", fake_request)
+    with pytest.raises(RuntimeError, match="scope policy"):
+        manager.send("GET", "https://example.com/start")
+    assert calls == ["https://example.com/start"]
 
 
 def test_retry_after_supports_seconds_and_invalid_values():

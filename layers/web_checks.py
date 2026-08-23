@@ -7,6 +7,13 @@ from urllib.parse import urlparse
 
 from core.models import Finding
 from core.utils import logger, normalize_url
+from layers.active_web_probes import ActiveWebProbeScanner
+from layers.browser_xss import BrowserXSSVerifier
+from layers.cache_checks import check_cache_policy
+from layers.csp_checks import check_csp_policy
+from layers.safe_template_checks import SafeTemplateScanner
+from layers.stacktrace_checks import detect_stack_trace
+from layers.technology_fingerprint import fingerprint_snapshot
 
 
 SECURITY_HEADERS = {
@@ -17,13 +24,13 @@ SECURITY_HEADERS = {
 }
 
 VERBOSE_ERROR_PATTERNS = [
-    r"traceback \(most recent call last\)",
-    r"exception in thread",
-    r"stack trace",
-    r"line \d+, in ",
     r"sqlstate",
     r"syntax error at or near",
+    r"you have an error in your sql syntax",
+    r"warning: .* on line \d+",
 ]
+
+_CONFIDENCE_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
 
 
 class WebPostureScanner:
@@ -37,39 +44,111 @@ class WebPostureScanner:
         self.errors: List[Dict[str, Any]] = []
         self.skipped: List[str] = []
         self.snapshots: List[Dict[str, Any]] = []
+        self.active_probe_meta: Dict[str, Any] = {}
+        self.safe_template_meta: Dict[str, Any] = {}
+        self.browser_xss_meta: Dict[str, Any] = {}
+        self.technology_index: Dict[str, Dict[str, Any]] = {}
 
     def scan(self, urls: List[str]) -> Tuple[List[Finding], Dict[str, Any]]:
         if not self.enabled:
-            self.skipped.append("Web passive checks are disabled by configuration.")
+            self.skipped.append("Web posture checks are disabled in this configuration.")
             return [], self._meta()
 
         findings: List[Finding] = []
         inspected = 0
         for url in self._unique_urls(urls):
             if inspected >= self.max_urls:
-                self.skipped.append(f"Stopped after {self.max_urls} URLs to keep passive checks bounded.")
+                self.skipped.append(
+                    f"Stopped after {self.max_urls} URLs; raise passive_checks.web.max_urls to inspect more."
+                )
                 break
             inspected += 1
             snapshot = self._fetch_snapshot(url)
             if not snapshot:
                 continue
             self.snapshots.append(snapshot)
+            self._record_technologies(snapshot)
             findings.extend(self._check_security_headers(snapshot))
             findings.extend(self._check_cookies(snapshot))
+            findings.extend(check_cache_policy(snapshot))
+            findings.extend(check_csp_policy(snapshot))
             findings.extend(self._check_redirects(snapshot))
-            findings.extend(self._check_verbose_errors(snapshot))
+            stack_findings = detect_stack_trace(snapshot)
+            findings.extend(stack_findings)
+            if not stack_findings:
+                findings.extend(self._check_verbose_errors(snapshot))
             cors_finding = self._check_cors(url)
             if cors_finding:
                 findings.append(cors_finding)
+
+        active_probe_scanner = ActiveWebProbeScanner(self.requester, self.config)
+        active_findings, self.active_probe_meta = active_probe_scanner.scan(
+            self.snapshots
+        )
+        findings.extend(active_findings)
+        if self.active_probe_meta.get("errors"):
+            self.errors.extend(self.active_probe_meta["errors"])
+        self.skipped.extend(self.active_probe_meta.get("skipped", []))
+
+        safe_templates = SafeTemplateScanner(self.requester, self.config)
+        template_target = str(self.config.get("target", "") or "")
+        if not template_target and self.snapshots:
+            template_target = self.snapshots[0]["url"]
+        template_findings, self.safe_template_meta = safe_templates.scan(template_target)
+        findings.extend(template_findings)
+        if self.safe_template_meta.get("errors"):
+            self.errors.extend(self.safe_template_meta["errors"])
+        self.skipped.extend(self.safe_template_meta.get("skipped", []))
+
+        browser_xss = BrowserXSSVerifier(self.config)
+        xss_findings, self.browser_xss_meta = browser_xss.verify(self.snapshots)
+        findings.extend(xss_findings)
+        if self.browser_xss_meta.get("errors"):
+            self.errors.extend(self.browser_xss_meta["errors"])
+        self.skipped.extend(self.browser_xss_meta.get("skipped", []))
         return findings, self._meta()
 
     def _meta(self) -> Dict[str, Any]:
+        technologies = sorted(
+            self.technology_index.values(),
+            key=lambda item: (str(item.get("category", "")), str(item.get("name", ""))),
+        )
         return {
             "checked_urls": len(self.snapshots),
             "errors": self.errors,
             "skipped": self.skipped,
             "sampled_urls": [snapshot["url"] for snapshot in self.snapshots[:10]],
+            "technologies": technologies,
+            "active_probes": self.active_probe_meta,
+            "safe_templates": self.safe_template_meta,
+            "browser_xss": self.browser_xss_meta,
         }
+
+    def _record_technologies(self, snapshot: Dict[str, Any]) -> None:
+        for observation in fingerprint_snapshot(snapshot):
+            name = str(observation.get("name", ""))
+            version = str(observation.get("version", ""))
+            key = f"{name.lower()}:{version.lower()}"
+            current = self.technology_index.setdefault(
+                key,
+                {
+                    "name": name,
+                    "version": version,
+                    "category": observation.get("category", ""),
+                    "confidence": observation.get("confidence", "LOW"),
+                    "signals": [],
+                    "observed_on": [],
+                },
+            )
+            if _CONFIDENCE_RANK.get(str(observation.get("confidence", "LOW")), 0) > _CONFIDENCE_RANK.get(
+                str(current.get("confidence", "LOW")), 0
+            ):
+                current["confidence"] = observation.get("confidence", "LOW")
+            for signal in observation.get("signals", []) or []:
+                if signal not in current["signals"]:
+                    current["signals"].append(signal)
+            if snapshot["url"] not in current["observed_on"] and len(current["observed_on"]) < 5:
+                current["observed_on"].append(snapshot["url"])
 
     def _unique_urls(self, urls: List[str]) -> List[str]:
         seen = set()
@@ -89,7 +168,7 @@ class WebPostureScanner:
         try:
             response = self.requester.send("GET", url)
         except Exception as exc:
-            logger.error(f"Passive web check failed for {url}: {exc}")
+            logger.error(f"Web posture request failed for {url}: {exc}")
             self.errors.append({"url": url, "error": str(exc)})
             return None
         if response is None:
@@ -124,11 +203,17 @@ class WebPostureScanner:
         headers = snapshot["headers"]
         missing = []
         for header_key, header_name in SECURITY_HEADERS.items():
-            if header_key == "content-security-policy" and not snapshot["content_type"].startswith("text/html"):
+            if (
+                header_key == "content-security-policy"
+                and not snapshot["content_type"].startswith("text/html")
+            ):
                 continue
             if header_key not in headers:
                 missing.append(header_name)
-        if snapshot["url"].startswith("https://") and "strict-transport-security" not in headers:
+        if (
+            snapshot["url"].startswith("https://")
+            and "strict-transport-security" not in headers
+        ):
             missing.append("Strict-Transport-Security")
         if not missing:
             return findings
@@ -137,7 +222,7 @@ class WebPostureScanner:
             Finding(
                 plugin="web_posture",
                 type="Missing Security Headers",
-                title="Security Headers Missing",
+                title="Browser Security Headers Are Incomplete",
                 category="misconfiguration",
                 severity=severity,
                 confidence="HIGH",
@@ -148,12 +233,16 @@ class WebPostureScanner:
                     "observed_headers": headers,
                     "status": snapshot["status"],
                 },
-                remediation="Set baseline browser security headers and validate them in deployment checks.",
+                remediation="Set the missing headers at the application or edge layer, then verify the final response seen by clients.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="passive-web",
                 reproducible=True,
-                target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                target={
+                    "source": "passive-web",
+                    "host": snapshot["host"],
+                    "path": snapshot["path"],
+                },
             )
         )
         return findings
@@ -181,9 +270,13 @@ class WebPostureScanner:
                     Finding(
                         plugin="web_posture",
                         type="Cookie Security Attributes Missing",
-                        title="Cookie Missing Security Attributes",
+                        title="Cookie Is Missing Recommended Security Attributes",
                         category="misconfiguration",
-                        severity="LOW" if snapshot["url"].startswith("http://") else "MEDIUM",
+                        severity=(
+                            "LOW"
+                            if snapshot["url"].startswith("http://")
+                            else "MEDIUM"
+                        ),
                         confidence="HIGH",
                         surface_id=f"cookie:{snapshot['url']}:{morsel.key}",
                         url=snapshot["url"],
@@ -193,19 +286,25 @@ class WebPostureScanner:
                             "same_site": same_site,
                             "set_cookie": raw_cookie,
                         },
-                        remediation="Mark session cookies as HttpOnly, Secure, and SameSite where applicable.",
+                        remediation="Set HttpOnly, Secure, and an appropriate SameSite policy on session or sensitive cookies.",
                         reproduction={"method": "GET", "url": snapshot["url"]},
                         verification_status="detected",
                         scanner_mode="passive-web",
                         reproducible=True,
-                        target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                        target={
+                            "source": "passive-web",
+                            "host": snapshot["host"],
+                            "path": snapshot["path"],
+                        },
                     )
                 )
         return findings
 
     def _check_cors(self, url: str) -> Finding | None:
         try:
-            response = self.requester.send("GET", url, headers={"Origin": self.origin_probe})
+            response = self.requester.send(
+                "GET", url, headers={"Origin": self.origin_probe}
+            )
         except Exception as exc:
             self.errors.append({"url": url, "kind": "cors", "error": str(exc)})
             return None
@@ -221,7 +320,7 @@ class WebPostureScanner:
         return Finding(
             plugin="web_posture",
             type="Permissive CORS Policy",
-            title="CORS Allows Credentialed Cross-Origin Access",
+            title="Credentialed CORS Accepts an Untrusted Origin",
             category="misconfiguration",
             severity="MEDIUM",
             confidence="HIGH",
@@ -230,11 +329,17 @@ class WebPostureScanner:
             evidence={
                 "origin_probe": self.origin_probe,
                 "access_control_allow_origin": acao,
-                "access_control_allow_credentials": headers.get("access-control-allow-credentials"),
+                "access_control_allow_credentials": headers.get(
+                    "access-control-allow-credentials"
+                ),
                 "status": response.status_code,
             },
-            remediation="Restrict Access-Control-Allow-Origin to trusted origins and avoid credentialed wildcard CORS.",
-            reproduction={"method": "GET", "url": normalize_url(url), "headers": {"Origin": self.origin_probe}},
+            remediation="Allow only trusted origins when credentials are permitted, and avoid reflecting arbitrary Origin values.",
+            reproduction={
+                "method": "GET",
+                "url": normalize_url(url),
+                "headers": {"Origin": self.origin_probe},
+            },
             verification_status="detected",
             scanner_mode="passive-web",
             reproducible=True,
@@ -242,17 +347,20 @@ class WebPostureScanner:
         )
 
     def _check_redirects(self, snapshot: Dict[str, Any]) -> List[Finding]:
-        if snapshot["status"] not in {301, 302, 303, 307, 308} or not snapshot["location"]:
+        if (
+            snapshot["status"] not in {301, 302, 303, 307, 308}
+            or not snapshot["location"]
+        ):
             return []
         parsed_current = urlparse(snapshot["url"])
         parsed_target = urlparse(snapshot["location"])
         if not parsed_target.scheme:
             return []
         if parsed_current.scheme == "https" and parsed_target.scheme == "http":
-            title = "HTTPS Downgrade Redirect"
+            title = "HTTPS Request Redirects to HTTP"
             severity = "MEDIUM"
         elif parsed_target.netloc and parsed_target.netloc != parsed_current.netloc:
-            title = "External Redirect Observed"
+            title = "Response Redirects to an External Host"
             severity = "LOW"
         else:
             return []
@@ -270,12 +378,16 @@ class WebPostureScanner:
                     "status": snapshot["status"],
                     "location": snapshot["location"],
                 },
-                remediation="Review redirect targets and prevent external or downgrade redirects where they are not required.",
+                remediation="Confirm that the redirect is intentional. Remove downgrade redirects and restrict external destinations where users can influence the target.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="passive-web",
                 reproducible=True,
-                target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                target={
+                    "source": "passive-web",
+                    "host": snapshot["host"],
+                    "path": snapshot["path"],
+                },
             )
         ]
 
@@ -294,7 +406,7 @@ class WebPostureScanner:
             Finding(
                 plugin="web_posture",
                 type="Verbose Error Disclosure",
-                title="Server Error Exposes Internal Details",
+                title="Server Error Reveals Internal Details",
                 category="misconfiguration",
                 severity="MEDIUM",
                 confidence="HIGH",
@@ -303,13 +415,17 @@ class WebPostureScanner:
                 evidence={
                     "status": snapshot["status"],
                     "matched_patterns": matched,
-                    "response_excerpt": re.sub(r"\s+", " ", body).strip()[:240],
+                    "response_length": len(body),
                 },
-                remediation="Replace verbose exception pages with generic error responses and log stack traces server-side only.",
+                remediation="Return a generic error to the client and keep SQL errors and framework diagnostics in server-side logs.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
                 verification_status="detected",
                 scanner_mode="passive-web",
                 reproducible=True,
-                target={"source": "passive-web", "host": snapshot["host"], "path": snapshot["path"]},
+                target={
+                    "source": "passive-web",
+                    "host": snapshot["host"],
+                    "path": snapshot["path"],
+                },
             )
         ]

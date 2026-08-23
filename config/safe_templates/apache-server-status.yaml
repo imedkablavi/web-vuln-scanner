@@ -1,0 +1,19 @@
+id: apache-server-status-exposed
+info:
+  name: Apache Server Status Exposed
+  severity: medium
+  confidence: high
+  category: information-disclosure
+  description: Apache mod_status output can disclose request paths, client activity, workers, and server internals.
+  remediation: Disable public mod_status access or restrict the status endpoint to trusted administrative networks.
+request:
+  method: GET
+  path: /server-status
+matchers_condition: all
+matchers:
+  - type: status
+    values: [200]
+  - type: word
+    part: body
+    values:
+      - Apache Server Status for

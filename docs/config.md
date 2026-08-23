@@ -1,111 +1,112 @@
-# Configuration Reference (default_config.yaml)
+# Configuration reference
 
-- `scanner.target`: URL to scan.
-- `scanner.scope`:
-  - `allowlist`: hostnames explicitly allowed.
-  - `blocklist`: paths/keywords to skip.
-  - `include_domains`: globbed host filters (required for SSRF guard).
-  - `exclude_paths`: path prefixes to skip.
-  - `allow_private`: allow private/loopback IPs (default false).
-  - `max_depth`: crawl recursion limit.
-- `scanner.crawler`:
-  - `max_depth`, `max_urls`, `max_url_length`, `respect_robots`, `dedup`.
-- `scanner.concurrency`:
-  - `threads`: global worker count.
-  - `per_host_concurrency`: semaphore per host.
-  - `delay`: base delay between requests (+ jitter).
-  - `timeout`: per-request timeout (seconds).
-  - `max_retries`: request retries with backoff.
-  - `global_timeout_seconds`: informational; scan not forcibly aborted.
-- `scanner.plugin_contract`: `v2` or `legacy`.
-- `scanner.browser_enabled` / `crawler_enabled`: toggle browser/HTTP crawling.
-- `scanner.browser`: `headless`, `slow_mo`, tracing, screenshots, and interaction settings when Playwright enabled.
-- `scanner.auth_verification`:
-  - `enabled`: enable cross-actor access-control verification.
-  - `default_comparison_mode`: currently `semantic`.
-  - `compare_unauthenticated`: suppress false verified access-control claims when the same resource appears public without auth.
-  - `baseline_actor_id`: optional preferred owner/reference actor.
-  - `authenticated_crawl`: optional per-actor crawl bootstrap for authenticated discovery.
-  - `actors`: list of actors with:
-    - identity: `actor_id`, `display_name`, `role`, `enabled`
-    - static material: `headers`, `cookies`, `bearer_token`, `storage_state_path`
-    - dynamic auth config under `auth`:
-      - `auth_scheme`: `form_login`, `json_login`, `bearer_with_refresh`, `static_cookie`, `static_bearer`, `browser_state`, `none`
-      - `login_url` / `token_url` / `refresh_url` / `verify_url`
-      - browser-driven login fields when a browser flow is required:
-        - `browser_login_url`
-        - `use_browser`
-        - `browser_required`
-        - `username_selector`, `password_selector`, `submit_selector`
-        - `success_selector`, `wait_for_url_contains`
-        - `pre_submit_click_selectors`, `post_login_click_selectors`
-        - `browser_storage_keys`
-      - `username_env` / `password_env` or non-secret test placeholders
-      - `success_indicators` / `failure_indicators`
-      - `auth_headers_template`
-      - `session.cookie_names`, `session.csrf_cookie_names`
-      - `session.refresh.enabled`, `strategy`, `pre_expiry_seconds`, `retry_on_401`, `max_attempts`, `relogin_on_failure`
-- `scanner.rbac_matrix_file`: YAML file containing deterministic authorization expectations.
-- `scanner.rbac_matrix`: inline alternative to `rbac_matrix_file`.
-- `scanner.workflows`:
-  - `enabled`: enable declarative workflow execution.
-  - `directory`: directory containing workflow YAML files.
-  - `files`: optional explicit workflow file list.
-  - `replay_verified_only`: replay only workflows that produced verified results.
-- `scanner.plugins`: enable/disable and tune per plugin (`max_tests_per_surface`, thresholds).
-- `scanner.output`: `format`, `file`, `directory`.
-- `scanner.api`: `swagger_url`, `graphql_url`.
-- `scanner.passive_checks`:
-  - `web`: security headers, cookies, CORS, redirects, verbose errors.
-  - `data_exposure`: backup/debug/config probes and sensitive indicator heuristics.
-  - `api`: passive API posture findings derived from Swagger/GraphQL inventory.
-  - `dns_tls`: DNS inventory and TLS/HTTPS posture checks.
-- `scanner.verified_only`: HTML report filter. When `true`, show only findings with `verification_status=verified`.
-- `scanner.max_findings_per_plugin`: cap per plugin per scan.
-- `scanner.request`: timeouts, retries, user agents, follow redirects.
-- `logging`: `level`, `file`.
+The installed default configuration is intentionally neutral. It contains no target-specific RBAC policy, workflow scenario, live endpoint, username, password, cookie, token, or pre-enabled auth actor. Test policies and test workflows are used only by the repository QA/smoke suite and are excluded from the wheel and final Docker runtime.
 
-Tips:
-- Always add your target domain to `include_domains`/`allowlist` to satisfy SSRF guard.
-- Explicit CLI scans against loopback/private targets auto-enable `allow_private` for that exact target so local authorized validation remains possible.
-- Tune `per_host_concurrency` lower for fragile targets; reduce `delay` for small test targets.
-- Enable Playwright for browser-assisted surface collection and artifact capture. It is not a full browser spider.
-- Browser-driven login should always use env-based secrets and a `verify_url` or equivalent success proof. Visual success alone is not treated as actor readiness.
-- Auth verification remains dormant until at least two valid enabled actors are configured.
-- When a matching RBAC policy exists, deterministic verification takes precedence over heuristic access-control inference.
-- Workflow definitions are declarative YAML files. They support:
-  - `ensure_actor_ready`
-  - HTTP/API steps such as `visit_url` and `api_call`
-  - browser steps such as `click`, `fill`, `wait_for_selector`, `capture_screenshot`, `capture_dom`
-  - checkpoints such as `assert_status`, `assert_text`, `assert_denied`, `assert_masked`, `assert_policy_outcome`, and `proof_access`
-- Minimal workflow example:
-```yaml
-workflow_id: peer_access_policy
-title: Peer actor policy-backed access check
-replayable: true
-actors: [low_user, peer_user]
-steps:
-  - step_id: ensure_low_ready
-    step_type: ensure_actor_ready
-    actor_id: low_user
+## Scanner and scope
 
-  - step_id: switch_to_peer
-    step_type: switch_actor
-    actor_id: peer_user
+- `scanner.target`: URL to scan; the CLI normally supplies this.
+- `scanner.scope.allowlist` / `include_domains`: additional explicitly authorized hosts.
+- `scanner.scope.exclude_paths`: path prefixes to skip.
+- `scanner.scope.allow_private`: allow private/loopback destinations when explicitly authorized.
+- `scanner.scope.resolve_dns`: perform DNS destination preflight checks.
+- `scanner.crawler.max_depth`, `max_urls`, `max_url_length`: discovery bounds.
+- `scanner.crawler.javascript_discovery`: bounded static JavaScript endpoint extraction.
+- `scanner.crawler.har_seed`: sanitized HAR-assisted discovery. Captured requests are not replayed.
 
-  - step_id: peer_open_same_resource
-    step_type: visit_url
-    actor_id: peer_user
-    target: /auth_bypass?doc=1
-    checkpoints:
-      - checkpoint_id: peer_policy_verdict
-        checkpoint_type: assert_policy_outcome
-        expected: deny
-```
-- Request replay and workflow replay are different:
-  - request replay proves a single finding/scenario can be reproduced
-  - workflow replay proves a multi-step execution still agrees with the original checkpoint trail
-- Workflow `verified` results require step-level checkpoint evidence and cannot survive `partial`, `failed`, or `blocked_auth` execution states.
-- Use environment variables for secrets. Do not commit real usernames, passwords, cookies, bearer tokens, or refresh tokens.
-- Actors that fail login or refresh are reported explicitly and do not count as ready verification actors.
-- Treat experimental plugins (`xss_reflected`, `lfi`, `cmd_injection`, `open_redirect`) as incomplete unless you harden and validate them in your own test harness.
+## Concurrency and request behavior
+
+- `scanner.concurrency.threads`: active worker count.
+- `scanner.concurrency.per_host_concurrency`: per-host concurrency bound.
+- `scanner.concurrency.delay`: base delay between requests.
+- `scanner.concurrency.timeout`: compatibility timeout setting.
+- `scanner.concurrency.max_retries`: retry bound.
+- `scanner.concurrency.global_timeout_seconds`: enforced active-scanner deadline.
+- `scanner.request.timeouts.connect` / `read`: HTTP timeout bounds.
+- `scanner.request.max_retries`: request retry bound.
+- `scanner.request.max_redirects`: manual redirect limit.
+- `scanner.request.follow_redirects`: redirect behavior; active release profiles force this off where verification requires observing `Location` directly.
+
+## Browser
+
+- `scanner.browser_enabled`: enable Playwright-assisted discovery.
+- `scanner.browser.headless`, `slow_mo`: browser execution settings.
+- `scanner.browser.capture_trace`, `capture_screenshots`: generic browser evidence controls.
+- `capture_auth_trace`, `capture_auth_screenshots`, `retain_storage_state`: sensitive auth artifacts; off by default.
+- `scanner.browser.interactions.enabled`: permit configured generic interactions.
+- `submit_forms`: separately permit form submission.
+- `click_selectors`: explicit selectors only; avoid broad production selectors.
+- `scanner.browser.xss_verification`: bounded Chromium execution confirmation for reflected XSS candidates.
+
+## Auth and RBAC
+
+`scanner.auth_verification.actors` contains disabled schema stubs in the default YAML so users can see the supported fields, but all target URLs/selectors are blank and all actors are disabled. Configure real authorized accounts before enabling auth verification.
+
+Actor fields include:
+
+- identity: `actor_id`, `display_name`, `role`, `enabled`;
+- static material: `headers`, `cookies`, `bearer_token`, `storage_state_path`;
+- dynamic auth under `auth`:
+  - `auth_scheme`: `form_login`, `json_login`, `bearer_with_refresh`, `static_cookie`, `static_bearer`, `browser_state`, or `none`;
+  - `login_url`, `token_url`, `refresh_url`, `verify_url`;
+  - browser fields such as `browser_login_url`, selectors, storage keys, and wait conditions;
+  - `username_env` / `password_env` for secrets supplied through the environment;
+  - session cookie names and refresh policy.
+
+- `scanner.auth_verification.baseline_actor_id`: preferred reference/owner actor.
+- `authenticated_crawl`: optional per-actor discovery using established real sessions.
+- `scanner.rbac_matrix_file`: path to a user-supplied target-specific RBAC YAML file. The installed default is empty.
+- `scanner.rbac_matrix`: inline alternative to a file.
+
+The scanner does not ship a target-specific RBAC policy in its runtime package.
+
+## Workflows
+
+- `scanner.workflows.enabled`: execute user-supplied declarative workflows.
+- `directory`: directory containing target-specific workflow YAML files.
+- `files`: explicit workflow file list.
+- `replay_verified_only`: replay only workflows with verified results.
+
+The installed runtime does not ship QA workflow scenarios as defaults. Repository smoke fixtures remain source-only test material.
+
+Workflow steps can perform real authorized HTTP/API/browser actions, so create workflows specifically for the application being assessed. Do not copy an example route into production and assume it proves a vulnerability.
+
+## Active checks
+
+`scanner.active_checks.web` controls bounded live HTTP probes for SSTI, CRLF/response-header injection, TRACE reflection, and same-origin URL-fetch behavior.
+
+`scanner.active_checks.templates` controls conservative same-origin GET/HEAD templates:
+
+- `enabled`;
+- `include_builtin`;
+- `directory` / `files` for user templates;
+- `max_templates`, `max_requests`, `max_body_bytes`.
+
+Built-in safe templates perform real requests and require deterministic response matchers. They are not pre-generated findings.
+
+`scanner.active_checks.xml` is an explicit opt-in internal-entity parser probe and remains disabled in all built-in profiles.
+
+`scanner.plugins` configures stable active plugins and their bounds. LFI/path traversal and command injection remain experimental and blocked by the release maturity policy. SQLi, reflected-markup, open-redirect, and business-logic checks use live responses through the scoped request layer.
+
+## Passive checks
+
+- `scanner.passive_checks.web`: real response header/cookie/CORS/redirect/error posture.
+- `auth_tokens`: local metadata review of configured or already-issued JWTs; tokens are not modified.
+- `data_exposure`: observed-URL inspection and bounded path probes where the selected profile permits them.
+- `api`: posture derived from actual OpenAPI/GraphQL discovery.
+- `dns_tls`: live DNS/TLS/HTTPS posture.
+
+A passive observation can be informational or detected rather than verified. The status reflects evidence strength; the scanner does not invent exploit confirmation when only posture evidence exists.
+
+## Checkpoints, output, and logging
+
+- `scanner.checkpoint`: resumable active-test state. It stores completed test fingerprints and redacted findings, not cookies, Authorization headers, response bodies, or raw parameter values.
+- `scanner.output`: report format, file name, and directory.
+- `scanner.verified_only`: HTML report filter.
+- `scanner.max_findings_per_plugin`: global per-plugin finding cap.
+- `logging.level`, `logging.file`: explicit runtime logging configuration.
+
+## Operational guidance
+
+Always scope the real target explicitly. Use environment variables for secrets and disposable authorized test identities where possible. `passive` is the default profile; `safe-active` sends bounded live probes; `full-authorized` adds browser capability and can run target-specific auth/RBAC/workflows only when you configure them.
+
+Test fixtures under `tests/` and `smoke/` exist only to verify scanner correctness. CI explicitly rejects those fixtures if they leak into the installed wheel or final Docker runtime.

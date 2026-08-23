@@ -1,11 +1,15 @@
-
 # Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 .venv/
 .env
 .env.*
+!.env.example
 *.local
 
 # Local editor files
@@ -20,18 +24,18 @@ reports/
 reports_*/
 security_best_practices_report.md
 
+# Build output
+dist/
+build/
+*.egg-info/
+
 # Playwright
 node_modules/
 /test-results/
 /playwright-report/
 /blob-report/
-/playwright/.cache/
-/playwright/.auth/
+playwright/.cache/
+playwright/.auth/
 
-# Test and CI-only files
-tests/
-e2e/
-.github/workflows/
-playwright.config.js
-package.json
-package-lock.json
+# Optional local JS/e2e harness outputs
+e2e/.cache/
