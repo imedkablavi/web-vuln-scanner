@@ -53,6 +53,22 @@ PLUGIN_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": [],
         "notes": "Experimental redirect verification; disabled by the registry.",
     },
+    "ssti": {
+        "maturity": "experimental",
+        "activity": "active-bounded",
+        "default_enabled": False,
+        "cwe": ["CWE-1336"],
+        "owasp": ["A03:2021-Injection"],
+        "notes": "Marker-only arithmetic template-expression verification; no command execution, file reads, or sandbox escape probes.",
+    },
+    "crlf_injection": {
+        "maturity": "experimental",
+        "activity": "active-bounded",
+        "default_enabled": False,
+        "cwe": ["CWE-113"],
+        "owasp": ["A03:2021-Injection"],
+        "notes": "Inert response-header canary verification only; no cookie, redirect, script, or cache-control injection.",
+    },
 }
 
 
