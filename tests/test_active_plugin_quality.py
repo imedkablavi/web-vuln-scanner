@@ -73,6 +73,17 @@ def test_experimental_plugins_require_global_opt_in():
     assert "xss_reflected" not in loaded
 
 
+def test_experimental_plugins_require_request_manager_host_scope():
+    with run_regression_corpus() as (_, base_url):
+        hostport = base_url.split("//", 1)[1]
+        config = _config(base_url, "xss_reflected")
+        config["scope"]["include_domains"] = []
+        config["scope"]["allowlist"] = [hostport]
+        manager = RequestManager(config)
+        loaded = {plugin.name for plugin in PluginRegistry.load_plugins(config, manager)}
+    assert "xss_reflected" not in loaded
+
+
 def test_command_injection_requires_secondary_opt_in():
     with run_regression_corpus() as (_, base_url):
         config = _config(base_url, "cmd_injection")
