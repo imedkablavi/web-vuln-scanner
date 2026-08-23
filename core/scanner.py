@@ -2,6 +2,7 @@ import concurrent.futures
 from typing import Dict, List, Type
 
 from .models import AttackSurface, Finding
+from .plugin_runtime import send_surface_bounded
 from .utils import get_content_hash, logger
 from plugins.base import BasePlugin, PluginContractError
 from plugins.business_logic import BusinessLogicPlugin
@@ -62,7 +63,7 @@ class ScannerEngine:
 
     def _baseline(self, surface: AttackSurface):
         try:
-            resp = self.requester.send_surface(surface, timeout=self.request_timeout)
+            resp = send_surface_bounded(self.requester, surface, timeout=self.request_timeout)
         except Exception as exc:
             logger.error(f"Baseline request failed for {surface.url}: {exc}")
             return None
@@ -162,10 +163,10 @@ class ScannerEngine:
                     for tc in tests:
                         try:
                             plugin.validate_testcase(tc, surface)
-                            resp = self.requester.send_surface(
+                            resp = send_surface_bounded(
+                                self.requester,
                                 surface,
-                                tc.param,
-                                tc.payload,
+                                testcase=tc,
                                 timeout=request_timeout,
                             )
                             dbg["executed_requests"] += 1
