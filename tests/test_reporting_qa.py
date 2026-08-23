@@ -108,6 +108,6 @@ def test_config_redaction_is_recursive():
         }
     }
     redacted = sanitize_config(config)
-    assert redacted["scanner"]["auth"] == "***redacted***"
+    assert redacted["scanner"]["auth"]["headers"]["Authorization"] == "***redacted***"
     assert redacted["scanner"]["nested"]["api_key"] == "***redacted***"
     assert redacted["scanner"]["nested"]["safe"] == "value"
