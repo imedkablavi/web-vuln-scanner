@@ -87,7 +87,7 @@ class CSRFVerifier:
             plugin="csrf_verification",
             type="Cross-Site Request Forgery",
             title="State-Changing Workflow Accepts Cross-Site Request Without CSRF Token",
-            category="access-control",
+            category="request-integrity",
             severity="HIGH",
             confidence="HIGH",
             surface_id=f"csrf:{endpoint}",
