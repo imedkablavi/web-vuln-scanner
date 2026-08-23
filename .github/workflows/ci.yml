@@ -75,16 +75,18 @@ jobs:
 
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - run: |
+      - name: Install smoke dependencies and Chromium
+        run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
       - name: Local smoke target
         run: python smoke/run_smoke.py
       - name: Capture failed smoke report
