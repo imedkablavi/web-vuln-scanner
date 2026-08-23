@@ -150,8 +150,8 @@ class BasePlugin(ABC):
                     break
                 try:
                     self.validate_testcase(tc, surface)
-                    resp = self.session.send_surface(surface, tc.param, tc.payload)
                     requests_used += 1
+                    resp = self.session.send_surface(surface, tc.param, tc.payload)
                     vres = self.verify(tc, baseline, resp, context)
                     self.validate_verification_result(vres)
                     if vres.is_verified:
