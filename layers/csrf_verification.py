@@ -43,6 +43,7 @@ class CSRFVerifier:
         baseline_data = dict(self.form_data)
         baseline_data[self.token_field] = self.token_value
         probe_data = dict(self.form_data)
+        auth_cookies = dict(getattr(self.requester, "cookies", {}) or {})
 
         try:
             baseline = self.requester.send(
@@ -55,6 +56,7 @@ class CSRFVerifier:
                     "Sec-Fetch-Site": "same-origin",
                     "X-Scanner-Probe": "csrf-baseline",
                 },
+                cookies=auth_cookies,
                 timeout=self.timeout,
                 source="csrf_verification",
             )
@@ -68,6 +70,7 @@ class CSRFVerifier:
                     "Sec-Fetch-Site": "cross-site",
                     "X-Scanner-Probe": "csrf-cross-site-without-token",
                 },
+                cookies=auth_cookies,
                 timeout=self.timeout,
                 source="csrf_verification",
             )
@@ -96,6 +99,8 @@ class CSRFVerifier:
                 "cross_site_success_marker": True,
                 "csrf_token_omitted_in_probe": True,
                 "cross_site_origin_used": True,
+                "auth_cookies_reused": bool(auth_cookies),
+                "auth_cookie_values_recorded": False,
             },
             remediation=(
                 "Require a cryptographically strong per-session/per-request CSRF token for cookie-authenticated "
@@ -106,6 +111,7 @@ class CSRFVerifier:
                 "request_count": 2,
                 "baseline": "same-origin-with-token",
                 "probe": "cross-site-without-token",
+                "auth_cookie_values_recorded": False,
             },
             verification_status="verified",
             scanner_mode="workflow-bounded",
@@ -125,6 +131,7 @@ class CSRFVerifier:
             "explicit_opt_in": self.explicit_opt_in,
             "endpoint_configured": bool(self.endpoint_url),
             "max_requests": 2,
+            "auth_cookie_values_recorded": False,
             "errors": self.errors,
             "skipped": [skipped] if skipped else [],
         }
