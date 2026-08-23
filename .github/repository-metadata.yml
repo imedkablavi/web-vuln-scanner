@@ -1,0 +1,19 @@
+# Canonical repository metadata for maintainers.
+# GitHub repository settings are not applied from this file automatically.
+description: >-
+  Evidence-first, scope-aware web security scanner for authorized testing with
+  local regression fixtures, auth/RBAC verification, and SARIF/HTML/JSON reports.
+topics:
+  - web-security
+  - vulnerability-scanner
+  - owasp
+  - sarif
+  - security-testing
+  - python
+  - devsecops
+  - authorized-testing
+  - cybersecurity
+  - application-security
+license: Apache-2.0
+social_preview_candidate: docs/report-preview.svg
+homepage: https://github.com/imedkablavi/web-vuln-scanner
