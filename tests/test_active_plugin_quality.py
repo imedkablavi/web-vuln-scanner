@@ -93,6 +93,25 @@ def test_command_injection_requires_secondary_opt_in():
     assert "cmd_injection" not in loaded
 
 
+def test_command_separator_config_cannot_add_arbitrary_shell_text():
+    with run_regression_corpus() as (_, base_url):
+        config = _config(base_url, "cmd_injection")
+        config["plugins"]["cmd_injection"]["separators"] = ["; touch /tmp/unsafe", "&&"]
+        manager = RequestManager(config)
+        plugin = next(p for p in PluginRegistry.load_plugins(config, manager) if p.name == "cmd_injection")
+        surface = AttackSurface(
+            url=f"{base_url}/experimental/cmd",
+            method="GET",
+            params={"cmd": "status"},
+            source="local-regression-corpus",
+        )
+        tests = plugin.generate_tests(surface, {})
+
+    assert tests
+    assert all("touch" not in test.payload for test in tests)
+    assert all(test.payload.startswith(("; echo WVS_CMD_", "&& echo WVS_CMD_")) for test in tests)
+
+
 def test_xss_structural_positive_and_escaped_negative():
     with run_regression_corpus() as (_, base_url):
         positive_engine, positive = _scan(base_url, "xss_reflected", "/experimental/xss", {"q": "hello"})
