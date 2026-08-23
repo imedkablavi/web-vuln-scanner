@@ -25,7 +25,10 @@ jobs:
       - name: Install local browser runtime
         run: python -m playwright install --with-deps chromium
       - name: Contract, FP/FN, auth, redaction and rate-limit gates
-        run: python -m pytest -q tests/test_security_tool_regressions.py
+        run: |
+          python -m pytest -q \
+            tests/test_security_tool_regressions.py \
+            tests/test_additional_detectors.py
       - name: Local intentionally-vulnerable corpus smoke
         run: python smoke/run_smoke.py
       - name: SARIF conversion QA
@@ -45,4 +48,6 @@ jobs:
           manifest = yaml.safe_load(open("tests/corpus/manifest.yaml", encoding="utf-8"))
           assert manifest["network_policy"] == "local-only"
           assert manifest["target"] == "smoke/mock_server.py"
+          assert set(manifest.get("additional_targets", [])) == {"tests/corpus/additional_vuln_server.py"}
+          assert all("http://" not in str(case.get("target", "")) and "https://" not in str(case.get("target", "")) for case in manifest["cases"])
           PY
