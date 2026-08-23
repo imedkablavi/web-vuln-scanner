@@ -89,19 +89,32 @@ def test_scanner_nested_json_baseline_and_candidates_share_transport_shape():
         "settings": {"enabled": False},
     }
 
-    candidate_jsons = [call[2]["json"] for call in manager.calls[1:]]
+    candidate_calls = manager.calls[1:]
     owner_candidates = [
-        body
-        for body in candidate_jsons
-        if body["owner"]["id"] != 7 and body["reviewer"]["id"] == 11
+        call
+        for call in candidate_calls
+        if call[2]["json"]["owner"]["id"] != 7
+        and call[2]["json"]["reviewer"]["id"] == 11
     ]
     reviewer_candidates = [
-        body
-        for body in candidate_jsons
-        if body["owner"]["id"] == 7 and body["reviewer"]["id"] != 11
+        call
+        for call in candidate_calls
+        if call[2]["json"]["owner"]["id"] == 7
+        and call[2]["json"]["reviewer"]["id"] != 11
     ]
+    settings_candidates = [
+        call
+        for call in candidate_calls
+        if call[2]["json"]["settings"]["enabled"] is not False
+        and call[2]["json"]["owner"]["id"] == 7
+        and call[2]["json"]["reviewer"]["id"] == 11
+    ]
+
     assert owner_candidates
     assert reviewer_candidates
-    assert all(body["settings"]["enabled"] is False for body in owner_candidates)
-    assert all(body["settings"]["enabled"] is False for body in reviewer_candidates)
-    assert all(call[2]["params"] == {"mode": "edit"} for call in manager.calls)
+    assert settings_candidates
+    assert all(call[2]["json"]["settings"]["enabled"] is False for call in owner_candidates)
+    assert all(call[2]["json"]["settings"]["enabled"] is False for call in reviewer_candidates)
+
+    body_target_calls = owner_candidates + reviewer_candidates + settings_candidates
+    assert all(call[2]["params"] == {"mode": "edit"} for call in body_target_calls)
