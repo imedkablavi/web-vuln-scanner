@@ -1,5 +1,7 @@
 version: 1
 target: smoke/mock_server.py
+additional_targets:
+  - tests/corpus/additional_vuln_server.py
 network_policy: local-only
 cases:
   - id: sqli-error-positive
@@ -31,7 +33,33 @@ cases:
     classification: intentionally-vulnerable
     plugin: business_logic
     expected: cross-actor-signal
+  - id: ssti-expression-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssti?template=hello
+    classification: intentionally-vulnerable
+    plugin: ssti
+    expected: verified
+  - id: ssti-expression-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssti-safe?template=hello
+    classification: intentionally-safe
+    plugin: ssti
+    expected: no-finding
+  - id: crlf-header-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /crlf?next=/home
+    classification: intentionally-vulnerable
+    plugin: crlf_injection
+    expected: verified
+  - id: crlf-header-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /crlf-safe?next=/home
+    classification: intentionally-safe
+    plugin: crlf_injection
+    expected: no-finding
 notes:
   - All corpus traffic must bind to 127.0.0.1 on an ephemeral port.
   - CI must not require or contact public vulnerability targets.
-  - xss_reflected, lfi, cmd_injection, and open_redirect remain experimental until dedicated positive and negative gates are added.
+  - xss_reflected, lfi, cmd_injection, open_redirect, ssti, and crlf_injection remain experimental until their promotion gates are explicitly satisfied.
+  - SSTI fixtures prove arithmetic expression evaluation only; no command execution, file reads, or sandbox escape probes are allowed.
+  - CRLF fixtures use one inert X-Scanner-Canary header only; no cookie, redirect, script, or cache-control injection is allowed.
