@@ -69,6 +69,22 @@ PLUGIN_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": ["A03:2021-Injection"],
         "notes": "Inert response-header canary verification only; no cookie, redirect, script, or cache-control injection.",
     },
+    "ssrf": {
+        "maturity": "experimental",
+        "activity": "active-bounded-callback",
+        "default_enabled": False,
+        "cwe": ["CWE-918"],
+        "owasp": ["A10:2021-Server-Side Request Forgery"],
+        "notes": "Requires an explicit scanner-controlled callback and proof marker; no metadata/private-address guessing is performed.",
+    },
+    "host_header": {
+        "maturity": "experimental",
+        "activity": "active-bounded",
+        "default_enabled": False,
+        "cwe": ["CWE-346", "CWE-644"],
+        "owasp": ["A01:2021-Broken Access Control"],
+        "notes": "Reports only security-sensitive absolute URL/redirect influence, not ordinary Host reflection.",
+    },
 }
 
 
