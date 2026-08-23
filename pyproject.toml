@@ -46,6 +46,7 @@ web-vuln-profile = "core.scan_profiles:main"
 web-vuln-diff = "core.report_diff:main"
 web-vuln-har = "core.har_import:main"
 web-vuln-postman = "core.postman_import:main"
+web-vuln-wsdl = "core.wsdl_import:main"
 
 [tool.setuptools]
 py-modules = ["main_v2"]
