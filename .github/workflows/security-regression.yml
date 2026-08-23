@@ -1,0 +1,46 @@
+name: Security Regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  local-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Contract, FP/FN, auth, redaction and rate-limit gates
+        run: python -m pytest -q tests/test_security_tool_regressions.py
+      - name: Local intentionally-vulnerable corpus smoke
+        run: python smoke/run_smoke.py
+      - name: SARIF conversion QA
+        run: |
+          python -m core.sarif smoke_out/scan_report.json --output smoke_out/scan_report.sarif
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("smoke_out/scan_report.sarif").read_text(encoding="utf-8"))
+          assert data["version"] == "2.1.0"
+          assert data["runs"] and data["runs"][0]["tool"]["driver"]["name"] == "Web Vulnerability Scanner"
+          PY
+      - name: Assert corpus remains local-only
+        run: |
+          python - <<'PY'
+          import yaml
+          manifest = yaml.safe_load(open("tests/corpus/manifest.yaml", encoding="utf-8"))
+          assert manifest["network_policy"] == "local-only"
+          assert manifest["target"] == "smoke/mock_server.py"
+          PY
