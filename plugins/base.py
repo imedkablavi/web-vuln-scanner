@@ -72,9 +72,8 @@ class BasePlugin(ABC):
         except (TypeError, ValueError):
             return 6
 
-    @classmethod
-    def contract(cls, config: Dict) -> PluginContract:
-        max_tests = cls.max_tests_per_surface(config)
+    def contract(self, config: Dict) -> PluginContract:
+        max_tests = self.max_tests_per_surface(config)
         try:
             timeout = float(config.get("timeout_seconds", 10.0))
         except (TypeError, ValueError):
