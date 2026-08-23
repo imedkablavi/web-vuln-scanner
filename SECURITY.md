@@ -29,7 +29,9 @@ Stable active plugins must satisfy the v2 execution contract:
 6. have local positive and negative fixtures covering false-negative and false-positive boundaries;
 7. pass report/redaction and concurrency/rate-limit regression checks.
 
-`xss_reflected`, `lfi`, `cmd_injection`, and `open_redirect` remain experimental and registry-blocked. They must not be promoted based on implementation presence alone.
+`xss_reflected`, `lfi`, `cmd_injection`, and `open_redirect` remain **experimental** and disabled by default. They can be exercised only when `allow_experimental_plugins=true` and an explicit scope is configured. `cmd_injection` additionally requires `allow_command_probe=true`. Passing the local corpus is necessary for promotion, but not sufficient by itself; broader corpus diversity and false-positive data are still required before any experimental plugin becomes stable.
+
+The active-check evidence boundaries are documented in `docs/active-checks.md`.
 
 ## Authentication harness
 
