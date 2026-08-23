@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Web Vulnerability Scanner report preview</title>
+  <desc id="desc">A sanitized local test report preview showing one detected SQL injection signal.</desc>
+  <rect width="1200" height="630" fill="#111827"/>
+  <rect x="52" y="48" width="1096" height="534" rx="24" fill="#ffffff"/>
+  <text x="92" y="112" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#111827">Web Vulnerability Scanner</text>
+  <text x="92" y="151" font-family="Arial, sans-serif" font-size="20" fill="#4b5563">Evidence-first report · local synthetic target only</text>
+  <rect x="92" y="190" width="1016" height="88" rx="14" fill="#f3f4f6"/>
+  <text x="116" y="224" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#374151">TARGET</text>
+  <text x="116" y="255" font-family="Arial, sans-serif" font-size="20" fill="#111827">127.0.0.1 · local-test</text>
+  <text x="530" y="224" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#374151">STATUS</text>
+  <text x="530" y="255" font-family="Arial, sans-serif" font-size="20" fill="#111827">completed</text>
+  <text x="830" y="224" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#374151">FINDINGS</text>
+  <text x="830" y="255" font-family="Arial, sans-serif" font-size="20" fill="#111827">1 detected</text>
+  <rect x="92" y="316" width="1016" height="184" rx="14" fill="#fff7ed" stroke="#fed7aa"/>
+  <rect x="116" y="344" width="80" height="34" rx="17" fill="#7f1d1d"/>
+  <text x="137" y="367" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#ffffff">HIGH</text>
+  <text x="220" y="368" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#111827">SQL Injection Signal</text>
+  <text x="116" y="414" font-family="Arial, sans-serif" font-size="18" fill="#374151">Verification: detected · Confidence: HIGH · Plugin: sqli</text>
+  <text x="116" y="450" font-family="monospace" font-size="17" fill="#111827">signal = sql_error_pattern</text>
+  <text x="116" y="481" font-family="Arial, sans-serif" font-size="16" fill="#4b5563">Secrets and session material are redacted from reports and logs.</text>
+  <text x="92" y="548" font-family="Arial, sans-serif" font-size="17" fill="#6b7280">Authorized testing only · bounded requests · scope enforcement · SARIF / HTML / JSON</text>
+</svg>

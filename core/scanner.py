@@ -1,14 +1,16 @@
 import concurrent.futures
-from typing import List, Dict, Type
-from .utils import logger, get_content_hash
+import time
+from typing import Dict, List, Type
+
 from .models import AttackSurface, Finding
+from .utils import get_content_hash, logger
 from plugins.base import BasePlugin
-from plugins.sqli import SQLiPlugin
 from plugins.business_logic import BusinessLogicPlugin
-from plugins.xss_reflected import XSSReflectedPlugin
-from plugins.lfi import LFIPlugin
 from plugins.cmd_injection import CMDInjectionPlugin
+from plugins.lfi import LFIPlugin
 from plugins.open_redirect import OpenRedirectPlugin
+from plugins.sqli import SQLiPlugin
+from plugins.xss_reflected import XSSReflectedPlugin
 
 
 class PluginRegistry:
@@ -20,20 +22,40 @@ class PluginRegistry:
         "cmd_injection": CMDInjectionPlugin,
         "open_redirect": OpenRedirectPlugin,
     }
+    experimental = {"xss_reflected", "lfi", "cmd_injection", "open_redirect"}
 
     @classmethod
     def load_plugins(cls, config, request_manager) -> List[BasePlugin]:
         plugins = []
         requested = config.get("plugins", {})
-        unstable = {"xss_reflected", "lfi", "cmd_injection", "open_redirect"}
+        allow_experimental = bool(config.get("allow_experimental_plugins", False))
+        scope = config.get("scope", {}) or {}
+        # RequestManager currently enforces include_domains at dispatch time. Do
+        # not accept documentation-only allowlist entries as the active-plugin
+        # scope gate until they are wired into the request layer as well.
+        explicit_scope = bool(scope.get("include_domains"))
+
         for name, cfg in requested.items():
             cfg_obj = cfg if isinstance(cfg, dict) else {"enabled": bool(cfg)}
             plugin_cls = cls.available.get(name)
             if not plugin_cls:
                 continue
-            if name in unstable and cfg_obj.get("enabled"):
-                logger.warning(f"Plugin '{name}' is disabled (incomplete/unstable). Skipping.")
-                continue
+            if name in cls.experimental and cfg_obj.get("enabled"):
+                if not allow_experimental:
+                    logger.warning(
+                        f"Plugin '{name}' is experimental and requires allow_experimental_plugins=true. Skipping."
+                    )
+                    continue
+                if not explicit_scope:
+                    logger.warning(
+                        f"Plugin '{name}' requires scope.include_domains because it is enforced by RequestManager. Skipping."
+                    )
+                    continue
+                if name == "cmd_injection" and not bool(cfg_obj.get("allow_command_probe", False)):
+                    logger.warning(
+                        "Plugin 'cmd_injection' also requires allow_command_probe=true because it sends a bounded shell marker. Skipping."
+                    )
+                    continue
             if plugin_cls.enabled(cfg_obj):
                 plugins.append(plugin_cls(request_manager, cfg_obj))
         return plugins
@@ -110,6 +132,7 @@ class ScannerEngine:
                 "surface": surface,
             }
             for plugin in self.plugins:
+                contract = plugin.contract(getattr(plugin, "config", {}))
                 dbg = debug_counts["details"].setdefault(
                     plugin.name,
                     {
@@ -120,6 +143,13 @@ class ScannerEngine:
                         "status_counts": {},
                         "sample_testcase": None,
                         "first_response": None,
+                        "contract": {
+                            "timeout_seconds": contract.timeout_seconds,
+                            "request_budget": contract.request_budget,
+                            "max_tests_per_surface": contract.max_tests_per_surface,
+                            "evidence_schema": contract.evidence_schema,
+                        },
+                        "contract_violations": 0,
                     },
                 )
                 if not plugin.applicable(surface):
@@ -129,25 +159,53 @@ class ScannerEngine:
                     use_v2 = all(hasattr(plugin, attr) for attr in ("generate_tests", "verify", "build_finding"))
                 elif self.contract_mode == "legacy":
                     use_v2 = False
-                else:  # auto
+                else:
                     use_v2 = all(hasattr(plugin, attr) for attr in ("generate_tests", "verify", "build_finding"))
 
                 if use_v2:
-                    tests = plugin.generate_tests(surface, context)
-                    tests = tests[: plugin.max_tests_per_surface(getattr(plugin, "config", {}))]
+                    plugin_started = time.monotonic()
+                    try:
+                        tests = plugin.generate_tests(surface, context)
+                        if not isinstance(tests, list):
+                            raise ValueError(f"{plugin.name}: generate_tests must return a list")
+                    except Exception as exc:
+                        msg = f"Plugin {plugin.name} testcase generation failed on {surface.url}: {exc}"
+                        logger.error(msg)
+                        debug_counts["errors"].append(msg)
+                        dbg["contract_violations"] += 1
+                        continue
+
+                    tests = tests[: contract.max_tests_per_surface]
                     dbg["generated_testcases"] += len(tests)
                     if tests and dbg["sample_testcase"] is None:
                         first = tests[0]
                         dbg["sample_testcase"] = {
-                            "param": first.param,
-                            "kind": first.kind,
-                            "payload": first.payload,
-                            "method_override": first.method_override,
+                            "param": getattr(first, "param", ""),
+                            "kind": getattr(first, "kind", ""),
+                            "payload": getattr(first, "payload", ""),
+                            "method_override": getattr(first, "method_override", None),
                         }
+
+                    requests_used = 0
                     for tc in tests:
+                        elapsed = time.monotonic() - plugin_started
+                        if elapsed >= contract.timeout_seconds:
+                            msg = f"Plugin {plugin.name} timeout on {surface.url} after {elapsed:.3f}s"
+                            logger.warning(msg)
+                            debug_counts["errors"].append(msg)
+                            dbg["contract_violations"] += 1
+                            break
+                        if requests_used >= contract.request_budget:
+                            msg = f"Plugin {plugin.name} request budget exhausted on {surface.url}"
+                            logger.warning(msg)
+                            debug_counts["errors"].append(msg)
+                            dbg["contract_violations"] += 1
+                            break
                         try:
-                            resp = self.requester.send_surface(surface, tc.param, tc.payload)
+                            plugin.validate_testcase(tc, surface)
+                            requests_used += 1
                             dbg["executed_requests"] += 1
+                            resp = self.requester.send_surface(surface, tc.param, tc.payload)
                             if resp is not None and dbg["first_response"] is None:
                                 dbg["first_response"] = {
                                     "status": getattr(resp, "status_code", None),
@@ -157,6 +215,7 @@ class ScannerEngine:
                                 if debug_counts["first_response_example"] is None:
                                     debug_counts["first_response_example"] = dbg["first_response"]
                             vres = plugin.verify(tc, baseline, resp, context)
+                            plugin.validate_verification_result(vres)
                             if vres.is_verified:
                                 dbg["reported_results"] += 1
                                 status = getattr(vres, "verification_status", "suspected")
@@ -164,12 +223,13 @@ class ScannerEngine:
                                 finding = plugin.build_finding(tc, vres, surface)
                                 local_findings.append(finding)
                                 dbg["findings_written"] += 1
-                                if len(local_findings) >= self.max_findings_per_plugin:
+                                if dbg["findings_written"] >= self.max_findings_per_plugin:
                                     break
                         except Exception as exc:
-                            msg = f"Plugin {plugin.name} failed on {surface.url}: {exc}"
+                            msg = f"Plugin {plugin.name} failed contract/execution on {surface.url}: {exc}"
                             logger.error(msg)
                             debug_counts["errors"].append(msg)
+                            dbg["contract_violations"] += 1
                 else:
                     try:
                         context["baseline"] = baseline
@@ -185,8 +245,6 @@ class ScannerEngine:
                         logger.error(msg)
                         debug_counts["errors"].append(msg)
 
-                if len(local_findings) >= self.max_findings_per_plugin:
-                    break
             return local_findings
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
@@ -212,7 +270,10 @@ class ScannerEngine:
             "plugin_details": debug_counts["details"],
         }
         if self.debug or not all_findings:
-            logger.info(f"Debug counters summary: surfaces={debug_counts['surfaces_total']} plugins={debug_counts['plugins_total']} findings={debug_counts['findings_total']}")
+            logger.info(
+                f"Debug counters summary: surfaces={debug_counts['surfaces_total']} "
+                f"plugins={debug_counts['plugins_total']} findings={debug_counts['findings_total']}"
+            )
             if debug_counts.get("baseline_example"):
                 logger.info(f"Baseline sample: {debug_counts['baseline_example']}")
             if debug_counts.get("first_response_example"):
@@ -221,7 +282,8 @@ class ScannerEngine:
                 logger.info(
                     f"[{plugin_name}] generated_testcases={stats['generated_testcases']} "
                     f"executed_requests={stats['executed_requests']} reported_results={stats['reported_results']} "
-                    f"status_counts={stats['status_counts']} findings_written={stats['findings_written']} sample_testcase={stats['sample_testcase']} "
+                    f"status_counts={stats['status_counts']} findings_written={stats['findings_written']} "
+                    f"contract_violations={stats['contract_violations']} sample_testcase={stats['sample_testcase']} "
                     f"first_response={stats['first_response']}"
                 )
         return all_findings
