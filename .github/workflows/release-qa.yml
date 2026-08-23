@@ -11,9 +11,12 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - ".github/workflows/release-qa.yml"
+      - "config/**"
       - "core/**"
       - "layers/**"
       - "plugins/**"
+      - "policies/**"
+      - "workflows/**"
       - "main_v2.py"
 
 permissions:
@@ -42,6 +45,8 @@ jobs:
           /tmp/wvs-wheel/bin/python -m pip install dist/*.whl
           /tmp/wvs-wheel/bin/web-vuln-scanner --help
           /tmp/wvs-wheel/bin/web-vuln-sarif --help
+          /tmp/wvs-wheel/bin/web-vuln-profile passive --output /tmp/passive-profile.yaml
+          test -s /tmp/passive-profile.yaml
       - uses: actions/upload-artifact@v4
         with:
           name: python-dist
