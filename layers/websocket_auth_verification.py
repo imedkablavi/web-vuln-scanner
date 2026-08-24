@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 from core.models import Finding
+from core.requester_variants import requester_with_ephemeral_auth
 
 
 class WebSocketAuthVerifier:
@@ -42,26 +43,25 @@ class WebSocketAuthVerifier:
             "Sec-WebSocket-Version": "13",
             "Sec-WebSocket-Key": "c2Nhbm5lci13cy1jYW5hcnk=",
         }
-        baseline_headers = {**upgrade, **auth_headers, "X-Scanner-Probe": "websocket-authenticated-handshake"}
-        anonymous_headers = {
-            **upgrade,
-            **{name: "" for name in auth_headers},
-            "X-Scanner-Probe": "websocket-unauthenticated-handshake",
-        }
+        authenticated_requester = requester_with_ephemeral_auth(
+            self.requester,
+            headers=auth_headers,
+            cookies=auth_cookies,
+        )
+        anonymous_requester = requester_with_ephemeral_auth(self.requester)
         try:
-            baseline = self.requester.send(
+            baseline = authenticated_requester.send(
                 "GET",
                 self.endpoint_url,
-                headers=baseline_headers,
-                cookies=auth_cookies,
+                headers={**upgrade, "X-Scanner-Probe": "websocket-authenticated-handshake"},
                 timeout=self.timeout,
                 allow_redirects=False,
                 source="websocket_auth_verification",
             )
-            anonymous = self.requester.send(
+            anonymous = anonymous_requester.send(
                 "GET",
                 self.endpoint_url,
-                headers=anonymous_headers,
+                headers={**upgrade, "X-Scanner-Probe": "websocket-unauthenticated-handshake"},
                 cookies={},
                 timeout=self.timeout,
                 allow_redirects=False,
@@ -88,6 +88,7 @@ class WebSocketAuthVerifier:
                 "unauthenticated_handshake_status": 101,
                 "websocket_frames_sent": 0,
                 "auth_values_recorded": False,
+                "requesters_isolated": True,
             },
             remediation=(
                 "Require authentication before accepting the WebSocket upgrade, bind the resulting connection to "
@@ -98,6 +99,7 @@ class WebSocketAuthVerifier:
                 "handshake_only": True,
                 "websocket_frames_sent": 0,
                 "auth_values_recorded": False,
+                "requesters_isolated": True,
             },
             verification_status="verified",
             scanner_mode="handshake-bounded",
@@ -113,6 +115,7 @@ class WebSocketAuthVerifier:
             "max_requests": 2,
             "handshake_only": True,
             "websocket_frames_sent": 0,
+            "requesters_isolated": True,
             "errors": self.errors,
             "skipped": [skipped] if skipped else [],
         }
