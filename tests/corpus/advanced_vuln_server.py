@@ -11,6 +11,8 @@ LDAP_CANARY = "scanner-directory-canary*)(scannerAudit=1"
 XPATH_CANARY = "scanner-directory-canary' or @scannerAudit='1"
 JWT_CONTROL = "valid.synthetic.token"
 JWT_NEGATIVE = "invalid.synthetic.token"
+GRAPHQL_SECRET = "owner-private-field"
+WCD_MARKER = "owner-private-cache-marker"
 
 
 def _b64url(value: dict) -> str:
@@ -27,6 +29,7 @@ class AdvancedVulnHandler(BaseHTTPRequestHandler):
 
     oauth_codes = {}
     oauth_counter = 0
+    wcd_cache = {}
 
     def log_message(self, format, *args):  # noqa: N802
         return
@@ -43,6 +46,12 @@ class AdvancedVulnHandler(BaseHTTPRequestHandler):
 
     def _json(self, status: int, payload: dict, headers=None):
         self._send(status, json.dumps(payload), headers=headers, content_type="application/json")
+
+    def _websocket_upgrade(self):
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.end_headers()
 
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0"))
@@ -79,6 +88,17 @@ class AdvancedVulnHandler(BaseHTTPRequestHandler):
             self._send(401, "jwt-rejected")
             return
 
+        if parsed.path in {"/ws-vuln", "/ws-safe"}:
+            if self.headers.get("Upgrade", "").lower() != "websocket":
+                self._send(400, "upgrade-required")
+                return
+            auth = self.headers.get("Authorization", "")
+            if parsed.path == "/ws-vuln" or auth == "Bearer ws-valid-token":
+                self._websocket_upgrade()
+                return
+            self._send(401, "websocket-auth-required")
+            return
+
         if parsed.path in {"/oauth-code-vuln/authorize", "/oauth-code-safe/authorize"}:
             if params.get("client_id", [""])[0] != "scanner-local-client":
                 self._json(400, {"error": "invalid_client"})
@@ -102,6 +122,26 @@ class AdvancedVulnHandler(BaseHTTPRequestHandler):
             self._send(302, "oauth-code-redirect", headers={"Location": location})
             return
 
+        if parsed.path in {"/wcd-vuln/account.css", "/wcd-safe/account.css"}:
+            key = self.path
+            cookie = self.headers.get("Cookie", "")
+            authenticated = "session=wcd-owner" in cookie
+            if parsed.path.startswith("/wcd-vuln/"):
+                if authenticated:
+                    self.__class__.wcd_cache[key] = WCD_MARKER
+                    self._send(200, WCD_MARKER, headers={"X-Cache": "MISS", "Cache-Control": "public, max-age=60"})
+                    return
+                if key in self.__class__.wcd_cache:
+                    self._send(200, self.__class__.wcd_cache[key], headers={"X-Cache": "HIT"})
+                    return
+                self._send(401, "login-required", headers={"X-Cache": "MISS"})
+                return
+            if authenticated:
+                self._send(200, WCD_MARKER, headers={"X-Cache": "BYPASS", "Cache-Control": "private, no-store"})
+                return
+            self._send(401, "login-required", headers={"X-Cache": "BYPASS"})
+            return
+
         self._send(404, "not-found")
 
     def do_POST(self):  # noqa: N802
@@ -118,6 +158,22 @@ class AdvancedVulnHandler(BaseHTTPRequestHandler):
                 self._json(200, {"matched": query == XPATH_CANARY})
                 return
             self._json(200, {"matched": False})
+            return
+
+        if parsed.path in {"/graphql-auth-vuln", "/graphql-auth-safe"}:
+            payload = self._json_from_body(raw)
+            query = str(payload.get("query", "") or "")
+            actor = self.headers.get("X-Actor", "")
+            if "secret" not in query:
+                self._json(200, {"data": {"__typename": "Query"}})
+                return
+            if actor == "owner":
+                self._json(200, {"data": {"account": {"secret": GRAPHQL_SECRET}}})
+                return
+            if parsed.path == "/graphql-auth-vuln" and actor == "peer":
+                self._json(200, {"data": {"account": {"secret": GRAPHQL_SECRET}}})
+                return
+            self._json(200, {"data": {"account": {"secret": None}}, "errors": [{"message": "forbidden"}]})
             return
 
         if parsed.path in {"/oauth-code-vuln/token", "/oauth-code-safe/token"}:
