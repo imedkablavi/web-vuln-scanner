@@ -286,6 +286,63 @@ scanner:
       url: ""
       canary_host: "scanner-cache-canary.invalid"
       timeout_seconds: 3
+    directory_query:
+      enabled: false
+      explicit_opt_in: false
+      allow_external_probes: false
+      mode: ""
+      endpoint_url: ""
+      field: "query"
+      control_value: "scanner-directory-canary"
+      success_json_path: "matched"
+      expected_value: true
+      timeout_seconds: 2
+    jwt_server:
+      enabled: false
+      explicit_opt_in: false
+      endpoint_url: ""
+      control_token_env: ""
+      negative_token_env: ""
+      negative_token_class: "operator-supplied-invalid"
+      success_marker: ""
+      success_statuses: [200]
+      timeout_seconds: 2
+    oauth_code_flow:
+      enabled: false
+      explicit_opt_in: false
+      allow_external_flow: false
+      authorization_url: ""
+      token_url: ""
+      client_id: ""
+      redirect_uri: ""
+      expect_id_token: true
+      timeout_seconds: 3
+    websocket_auth:
+      enabled: false
+      explicit_opt_in: false
+      endpoint_url: ""
+      timeout_seconds: 2
+    graphql_authorization:
+      enabled: false
+      explicit_opt_in: false
+      endpoint_url: ""
+      query: ""
+      variables: {}
+      protected_json_path: ""
+      expected_value: null
+      baseline_headers_env: ""
+      comparison_headers_env: ""
+      baseline_actor_id: "owner"
+      comparison_actor_id: "peer"
+      timeout_seconds: 2
+    web_cache_deception:
+      enabled: false
+      explicit_opt_in: false
+      url: ""
+      private_marker: ""
+      cache_hit_header: "X-Cache"
+      cache_hit_value: "HIT"
+      timeout_seconds: 2
   output:
     format: ["json", "html"]
     file: "scan_report"

@@ -29,7 +29,10 @@ jobs:
           python -m pytest -q \
             tests/test_security_tool_regressions.py \
             tests/test_additional_detectors.py \
-            tests/test_extended_detectors.py
+            tests/test_extended_detectors.py \
+            tests/test_next_wave_detectors.py \
+            tests/test_authorization_cache_verifiers.py \
+            tests/test_http_desync_lab.py
       - name: DOM-XSS Chromium positive/negative gate
         env:
           RUN_BROWSER_SECURITY_TESTS: "1"
@@ -53,8 +56,14 @@ jobs:
           manifest = yaml.safe_load(open("tests/corpus/manifest.yaml", encoding="utf-8"))
           assert manifest["network_policy"] == "local-only"
           assert manifest["target"] == "smoke/mock_server.py"
-          assert set(manifest.get("additional_targets", [])) == {"tests/corpus/additional_vuln_server.py"}
+          assert set(manifest.get("additional_targets", [])) == {
+              "tests/corpus/additional_vuln_server.py",
+              "tests/corpus/advanced_vuln_server.py",
+              "tests/corpus/http_desync_lab.py",
+          }
           assert all("http://" not in str(case.get("target", "")) and "https://" not in str(case.get("target", "")) for case in manifest["cases"])
-          assert all(case.get("classification") in {"intentionally-vulnerable", "intentionally-safe", "authenticated-session", "unauthenticated"} for case in manifest["cases"])
+          assert all(case.get("classification") in {"intentionally-vulnerable", "intentionally-safe", "authenticated-session", "unauthenticated", "research-positive", "research-negative"} for case in manifest["cases"])
           assert all(not str(case.get("path", "")).startswith(("http://", "https://")) for case in manifest["cases"])
+          desync = [case for case in manifest["cases"] if case.get("plugin") == "http_desync_research"]
+          assert desync and all(case.get("target") == "tests/corpus/http_desync_lab.py" for case in desync)
           PY

@@ -1,7 +1,9 @@
-version: 3
+version: 4
 target: smoke/mock_server.py
 additional_targets:
   - tests/corpus/additional_vuln_server.py
+  - tests/corpus/advanced_vuln_server.py
+  - tests/corpus/http_desync_lab.py
 network_policy: local-only
 cases:
   - id: sqli-error-positive
@@ -223,22 +225,117 @@ cases:
     classification: intentionally-safe
     plugin: jwt_validation
     expected: no-finding
+  - id: ldap-query-semantics-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ldap-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: directory_query_verification
+    expected: verified-ldap-query-semantics
+  - id: ldap-query-semantics-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ldap-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: directory_query_verification
+    expected: no-finding
+  - id: xpath-query-semantics-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /xpath-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: directory_query_verification
+    expected: verified-xpath-query-semantics
+  - id: xpath-query-semantics-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /xpath-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: directory_query_verification
+    expected: no-finding
+  - id: jwt-server-invalid-token-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /jwt-server-vuln
+    classification: intentionally-vulnerable
+    plugin: jwt_server_validation
+    expected: verified-invalid-token-accepted
+  - id: jwt-server-invalid-token-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /jwt-server-safe
+    classification: intentionally-safe
+    plugin: jwt_server_validation
+    expected: no-finding
+  - id: oauth-code-flow-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /oauth-code-vuln/authorize
+    classification: intentionally-vulnerable
+    plugin: oauth_code_flow_verification
+    expected: verified-pkce-nonce-code-reuse-signals
+  - id: oauth-code-flow-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /oauth-code-safe/authorize
+    classification: intentionally-safe
+    plugin: oauth_code_flow_verification
+    expected: no-finding
+  - id: websocket-handshake-auth-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ws-vuln
+    classification: intentionally-vulnerable
+    plugin: websocket_auth_verification
+    expected: verified-anonymous-upgrade
+  - id: websocket-handshake-auth-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ws-safe
+    classification: intentionally-safe
+    plugin: websocket_auth_verification
+    expected: no-finding
+  - id: graphql-cross-actor-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /graphql-auth-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: graphql_authorization_verification
+    expected: verified-cross-actor-read
+  - id: graphql-cross-actor-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /graphql-auth-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: graphql_authorization_verification
+    expected: no-finding
+  - id: web-cache-deception-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /wcd-vuln/account.css
+    classification: intentionally-vulnerable
+    plugin: web_cache_deception_verification
+    expected: verified-anonymous-cache-replay
+  - id: web-cache-deception-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /wcd-safe/account.css
+    classification: intentionally-safe
+    plugin: web_cache_deception_verification
+    expected: no-finding
+  - id: http-desync-parser-disagreement-positive
+    target: tests/corpus/http_desync_lab.py
+    path: synthetic_ambiguous_request
+    classification: research-positive
+    plugin: http_desync_research
+    expected: parser-boundary-disagreement
+  - id: http-desync-parser-disagreement-negative
+    target: tests/corpus/http_desync_lab.py
+    path: synthetic_normalized_request
+    classification: research-negative
+    plugin: http_desync_research
+    expected: no-disagreement
 notes:
-  - All corpus traffic must bind to 127.0.0.1 on ephemeral ports.
-  - The SSRF and XXE callback proof services are loopback-only and created by regression tests on ephemeral ports.
-  - CI must not require or contact public vulnerability targets, public OAST services, OAuth providers, or identity providers.
-  - xss_reflected, lfi, cmd_injection, open_redirect, ssti, crlf_injection, ssrf, and host_header remain registry-blocked experimental plugins.
-  - XXE, CSRF, NoSQL, OIDC, OAuth-flow, file-upload, cache-poisoning, and JWT validation layers are disabled by default.
-  - JWT validation is offline-only, takes its synthetic token from an environment variable, and never persists the raw token.
-  - CSRF, NoSQL, OAuth-flow, file-upload, and cache-poisoning active checks require explicit opt-in before they dispatch configured probes.
-  - OAuth-flow public-provider probing is blocked by default; CI authorization and redirect endpoints are loopback-only.
-  - File-upload fixtures use harmless static HTML without JavaScript or executable/polyglot payloads.
-  - Cache-poisoning verification uses a unique query key and a reserved .invalid X-Forwarded-Host canary to isolate the synthetic cache entry.
-  - DOM-XSS verification is disabled by default and requires the dedicated Chromium gate before any promotion decision.
-  - SSTI fixtures prove arithmetic expression evaluation only; no command execution, file reads, or sandbox escape probes are allowed.
-  - CRLF fixtures use one inert X-Scanner-Canary header only; no cookie, redirect, script, or cache-control injection is allowed.
-  - SSRF never guesses cloud metadata, RFC1918, link-local, or loopback destinations; only an explicitly configured scanner-controlled callback is used.
-  - Host-header verification requires security-sensitive absolute URL or redirect influence; ordinary reflection is a negative control.
-  - CORS verification requires two distinct arbitrary Origin values with credentials; wildcard-plus-credentials alone is not treated as verified cross-origin access.
-  - GraphQL checks are non-mutating and capped at introspection plus one invalid-field validation query.
-  - DOM-XSS canary JavaScript sets one DOM data attribute only and performs no network callback, storage access, cookie access, navigation, or persistence.
+  - All automated corpus network traffic binds to 127.0.0.1 on ephemeral ports.
+  - Public CI never contacts public vulnerable targets, OAST services, OAuth/OIDC providers, directory services, WebSocket services, or shared caches.
+  - LDAP/XPath verification is two-request semantic proof only; no writes, enumeration loops, credential guessing, or broad payload lists.
+  - JWT server validation uses operator-supplied control and negative tokens from environment variables; it never forges, mutates, brute-forces, or persists raw tokens.
+  - OAuth code-flow verification is credential-free/public-client only, loopback-only by default, capped at five requests, and does not persist codes/tokens/nonces.
+  - WebSocket verification is handshake-only and sends zero WebSocket frames.
+  - GraphQL authorization uses two explicitly configured actors and isolated request sessions; actor header values are never persisted.
+  - Web cache deception uses an isolated unique query key and a separate anonymous RequestManager so ambient session cookies cannot leak into the replay.
+  - HTTP desync/request-smuggling work is research-only: the fixture contains one synthetic request plus an inert trailing byte, no follow-up request, no network dispatcher, and no external target support.
+  - New next-wave active verification layers are disabled by default and require explicit opt-in where they dispatch security-sensitive probes.
+  - Existing experimental plugin and earlier verification safety boundaries remain unchanged.

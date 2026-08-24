@@ -2,8 +2,7 @@
 
 The previously hardened orchestration is preserved verbatim in
 ``core.main_v2_base``. This wrapper appends independently bounded verification
-layers without weakening the existing scope, plugin, auth, reporting, or release
-behavior.
+layers without weakening existing scope, auth, reporting, or release behavior.
 """
 
 from __future__ import annotations
@@ -15,13 +14,19 @@ from core.request_manager import RequestManager
 from layers.cache_poisoning_verification import CachePoisoningVerifier
 from layers.cors_verification import CORSVerifier
 from layers.csrf_verification import CSRFVerifier
+from layers.directory_query_verification import DirectoryQueryVerifier
 from layers.dom_xss import DOMXSSVerifier
 from layers.file_upload_verification import FileUploadVerifier
+from layers.graphql_authorization_verification import GraphQLAuthorizationVerifier
 from layers.graphql_verification import GraphQLVerifier
+from layers.jwt_server_validation import JWTServerValidationVerifier
 from layers.jwt_validation import JWTValidationVerifier
 from layers.nosql_verification import NoSQLVerifier
+from layers.oauth_code_flow_verification import OAuthCodeFlowVerifier
 from layers.oauth_flow_verification import OAuthFlowVerifier
 from layers.oidc_verification import OIDCVerifier
+from layers.web_cache_deception_verification import WebCacheDeceptionVerifier
+from layers.websocket_auth_verification import WebSocketAuthVerifier
 from layers.xxe_verification import XXEVerifier
 
 
@@ -40,6 +45,15 @@ def _merge_layer_result(findings, layers, skipped, key, result):
     layers[key] = layer_meta
     skipped.extend(item for item in layer_meta.get("skipped", []) if item not in skipped)
     return layer_meta
+
+
+def _run_bounded_layer(scan_meta, findings, layers, skipped, key, label, callback):
+    try:
+        meta = _merge_layer_result(findings, layers, skipped, key, callback())
+        if meta.get("errors"):
+            _base._mark_partial(scan_meta, f"{label} encountered errors.")
+    except Exception as exc:
+        _base._mark_partial(scan_meta, f"{label} failed: {exc}")
 
 
 async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=None):
@@ -61,32 +75,26 @@ async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=No
     requester = RequestManager(scanner_cfg)
     active_cfg = scanner_cfg.get("active_verification", {})
 
-    try:
-        cors_meta = _merge_layer_result(
-            findings,
-            layers,
-            skipped,
-            "cors_verification",
-            CORSVerifier(requester, scanner_cfg).scan(discovery_urls),
-        )
-        if cors_meta.get("errors"):
-            _base._mark_partial(scan_meta, "Bounded CORS verification encountered errors.")
-    except Exception as exc:
-        _base._mark_partial(scan_meta, f"Bounded CORS verification failed: {exc}")
+    _run_bounded_layer(
+        scan_meta,
+        findings,
+        layers,
+        skipped,
+        "cors_verification",
+        "Bounded CORS verification",
+        lambda: CORSVerifier(requester, scanner_cfg).scan(discovery_urls),
+    )
 
     gql_endpoint = graphql_url or scanner_cfg.get("api", {}).get("graphql_url", "")
-    try:
-        graphql_meta = _merge_layer_result(
-            findings,
-            layers,
-            skipped,
-            "graphql_verification",
-            GraphQLVerifier(requester, scanner_cfg).scan(gql_endpoint),
-        )
-        if graphql_meta.get("errors"):
-            _base._mark_partial(scan_meta, "Bounded GraphQL verification encountered errors.")
-    except Exception as exc:
-        _base._mark_partial(scan_meta, f"Bounded GraphQL verification failed: {exc}")
+    _run_bounded_layer(
+        scan_meta,
+        findings,
+        layers,
+        skipped,
+        "graphql_verification",
+        "Bounded GraphQL verification",
+        lambda: GraphQLVerifier(requester, scanner_cfg).scan(gql_endpoint),
+    )
 
     try:
         dom_findings, dom_meta = await DOMXSSVerifier(scanner_cfg).scan(discovery_urls)
@@ -99,99 +107,32 @@ async def run_scan_async(target, config, swagger_url, graphql_url, output_dir=No
     except Exception as exc:
         _base._mark_partial(scan_meta, f"DOM-XSS browser verification failed: {exc}")
 
-    if active_cfg.get("xxe", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings, layers, skipped, "xxe_verification", XXEVerifier(requester, scanner_cfg).scan()
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "XXE verification encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"XXE verification failed: {exc}")
+    layer_specs = [
+        ("xxe", "xxe_verification", "XXE verification", lambda: XXEVerifier(requester, scanner_cfg).scan()),
+        ("csrf", "csrf_verification", "CSRF workflow verification", lambda: CSRFVerifier(requester, scanner_cfg).scan()),
+        ("nosql", "nosql_verification", "NoSQL verification", lambda: NoSQLVerifier(requester, scanner_cfg).scan()),
+        ("jwt", "jwt_validation", "JWT validation", lambda: JWTValidationVerifier(scanner_cfg).scan()),
+        ("oidc", "oidc_verification", "OIDC discovery verification", lambda: OIDCVerifier(requester, scanner_cfg).scan()),
+        ("oauth_flow", "oauth_flow_verification", "OAuth redirect/state verification", lambda: OAuthFlowVerifier(requester, scanner_cfg).scan()),
+        ("file_upload", "file_upload_verification", "File-upload verification", lambda: FileUploadVerifier(requester, scanner_cfg).scan()),
+        ("cache_poisoning", "cache_poisoning_verification", "Cache-poisoning verification", lambda: CachePoisoningVerifier(requester, scanner_cfg).scan()),
+        ("directory_query", "directory_query_verification", "LDAP/XPath query verification", lambda: DirectoryQueryVerifier(requester, scanner_cfg).scan()),
+        ("jwt_server", "jwt_server_validation", "JWT server validation", lambda: JWTServerValidationVerifier(requester, scanner_cfg).scan()),
+        ("oauth_code_flow", "oauth_code_flow_verification", "OAuth code-flow verification", lambda: OAuthCodeFlowVerifier(requester, scanner_cfg).scan()),
+        ("websocket_auth", "websocket_auth_verification", "WebSocket authentication verification", lambda: WebSocketAuthVerifier(requester, scanner_cfg).scan()),
+        ("graphql_authorization", "graphql_authorization_verification", "GraphQL authorization verification", lambda: GraphQLAuthorizationVerifier(requester, scanner_cfg).scan()),
+        ("web_cache_deception", "web_cache_deception_verification", "Web cache deception verification", lambda: WebCacheDeceptionVerifier(requester, scanner_cfg).scan()),
+    ]
 
-    if active_cfg.get("csrf", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings, layers, skipped, "csrf_verification", CSRFVerifier(requester, scanner_cfg).scan()
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "CSRF workflow verification encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"CSRF workflow verification failed: {exc}")
+    for config_key, report_key, label, callback in layer_specs:
+        if active_cfg.get(config_key, {}).get("enabled", False):
+            _run_bounded_layer(scan_meta, findings, layers, skipped, report_key, label, callback)
 
-    if active_cfg.get("nosql", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings, layers, skipped, "nosql_verification", NoSQLVerifier(requester, scanner_cfg).scan()
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "NoSQL verification encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"NoSQL verification failed: {exc}")
-
-    if active_cfg.get("jwt", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings, layers, skipped, "jwt_validation", JWTValidationVerifier(scanner_cfg).scan()
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "JWT validation encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"JWT validation failed: {exc}")
-
-    if active_cfg.get("oidc", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings, layers, skipped, "oidc_verification", OIDCVerifier(requester, scanner_cfg).scan()
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "OIDC discovery verification encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"OIDC discovery verification failed: {exc}")
-
-    if active_cfg.get("oauth_flow", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings, layers, skipped, "oauth_flow_verification", OAuthFlowVerifier(requester, scanner_cfg).scan()
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "OAuth flow verification encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"OAuth flow verification failed: {exc}")
-
-    if active_cfg.get("file_upload", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings,
-                layers,
-                skipped,
-                "file_upload_verification",
-                FileUploadVerifier(requester, scanner_cfg).scan(),
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "File-upload verification encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"File-upload verification failed: {exc}")
-
-    if active_cfg.get("cache_poisoning", {}).get("enabled", False):
-        try:
-            meta = _merge_layer_result(
-                findings,
-                layers,
-                skipped,
-                "cache_poisoning_verification",
-                CachePoisoningVerifier(requester, scanner_cfg).scan(),
-            )
-            if meta.get("errors"):
-                _base._mark_partial(scan_meta, "Cache-poisoning verification encountered errors.")
-        except Exception as exc:
-            _base._mark_partial(scan_meta, f"Cache-poisoning verification failed: {exc}")
-
+    # HTTP request-smuggling/desync work intentionally remains a local research
+    # corpus only. No raw-protocol production-target dispatcher is exposed here.
     return findings, scan_meta
 
 
-# The Typer command defined by the preserved base module resolves this global at
-# call time, so replacing it upgrades both `python main_v2.py` and the wheel CLI.
 _base.run_scan_async = run_scan_async
 app = _base.app
 load_config = _base.load_config

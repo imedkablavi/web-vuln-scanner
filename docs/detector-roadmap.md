@@ -11,93 +11,83 @@ This roadmap prioritizes deterministic proof over payload count. Public CI remai
 - **SSRF callback proof — experimental:** one candidate request to an explicitly configured scanner callback; no internal-address guessing.
 - **Host-header trust — experimental:** reserved `.invalid` canary; reports security-sensitive absolute URL/redirect influence only.
 - **Credentialed CORS verification:** two unrelated synthetic origins must both be reflected with credentials.
-- **GraphQL verification:** introspection observation plus one invalid-field debug query; no mutations or resource-exhaustion probes.
+- **GraphQL debug verification:** introspection observation plus one invalid-field debug query; no mutations or resource-exhaustion probes.
 - **DOM-XSS Chromium verification — experimental browser layer:** fragment canary must actually execute; `innerHTML` positive and `textContent` negative fixtures.
 
-### New bounded verification layers — disabled by default
+### Bounded verification layers — disabled by default where active
 
-#### XXE / unsafe XML
+- **XXE:** controlled loopback entity-resolution proof; no `file://`, metadata or arbitrary private-service probes.
+- **CSRF:** explicit safe workflow, same-origin-with-token baseline versus cross-site-without-token proof.
+- **NoSQL:** scalar control versus one equivalent `$eq` object; no `$where`, JavaScript or regex-DoS probes.
+- **JWT offline policy:** zero-network algorithm/expiry/issuer/audience posture from environment-provided samples.
+- **OIDC discovery:** one metadata request for issuer/transport/PKCE-S256 posture.
+- **OAuth redirect/state:** credential-free redirect-URI binding and state preservation, loopback-only by default.
+- **File upload:** harmless static HTML marker with same-origin retrieval only.
+- **Cache poisoning:** isolated unique cache key plus reserved `.invalid` forwarding-host canary.
 
-- One explicitly configured XML endpoint and controlled entity callback.
-- Local positive fixture performs real entity resolution against a second loopback server; hardened negative rejects DTD processing.
-- No `file://`, local-file reads, metadata addresses, arbitrary private services or callback guessing.
-- Maximum one target POST; external callbacks require explicit opt-in.
+## Next-wave verification implemented
 
-#### CSRF request-integrity verification
+### LDAP / XPath query semantics
 
-- Requires `explicit_opt_in` and a known-safe configured action.
-- Two requests only: authenticated same-origin request with token, then cross-site request without token.
-- Positive proof requires both requests to satisfy the configured success marker; negative fixture enforces the token.
-- Ambient cookie values are reused but never written into evidence.
+- `directory_query_verification` supports explicit `ldap` or `xpath` mode.
+- Exactly two JSON POSTs: scalar control and one inert synthetic query canary.
+- Local vulnerable and safe fixtures prove query-semantic influence without writes.
+- Loopback-only by default; external probes require a second opt-in.
+- No directory enumeration, credential guessing, mutations or payload spraying.
 
-#### NoSQL document-query semantics
+### JWT server-side rejection harness
 
-- Requires `explicit_opt_in`, a configured endpoint and field.
-- Compares scalar input with exactly one equivalent `$eq` object.
-- Positive fixture interprets the operator; negative fixture enforces scalar schema.
-- No `$where`, JavaScript execution, regex DoS or destructive writes.
+- `jwt_server_validation` uses one known-good control token and one operator-supplied invalid token, both referenced by environment-variable name.
+- Adds an unauthenticated control so a finding requires: good token accepted, negative token accepted, unauthenticated request rejected.
+- Maximum three requests.
+- The scanner does not forge, mutate, brute-force or persist tokens.
 
-#### JWT token-policy validation
+### OAuth/OIDC code-flow verification
 
-- Offline-only; zero target requests.
-- Synthetic/current sample is read from a named environment variable and never persisted.
-- Checks unsecured/missing algorithm, configured algorithm allowlist, expiration, issuer and audience policy.
-- Does **not** prove server-side signature bypass or token acceptance and does not brute-force keys.
+- `oauth_code_flow_verification` uses a synthetic/public client with no client secret or user credentials.
+- Verifies PKCE wrong-verifier rejection, state preservation, OIDC nonce binding and authorization-code single use.
+- Loopback-only by default and hard-capped at five requests.
+- Codes, tokens, nonces and verifiers are not persisted in findings.
 
-#### OIDC discovery validation
+### WebSocket handshake authentication
 
-- One metadata GET only.
-- Checks exact configured issuer binding, HTTPS-or-loopback advertised endpoints, and PKCE S256 advertisement for public clients.
-- No credentials, authorization request, code exchange or token exchange.
+- `websocket_auth_verification` compares authenticated and isolated anonymous HTTP Upgrade handshakes.
+- Two requests only; zero WebSocket frames, subscriptions or long-lived sessions.
+- Reports only when both handshakes are accepted with status 101.
 
-#### OAuth flow validation
+### GraphQL object/field authorization
 
-- Requires `explicit_opt_in`; default authorization/redirect endpoints are loopback-only.
-- Two credential-free authorization GETs compare the registered redirect with a reserved `.invalid` redirect and check state preservation.
-- Public-provider probing requires a separate `allow_external_flow` opt-in.
+- `graphql_authorization_verification` executes one explicit query as two explicitly configured actors.
+- Actor headers come from environment variables and each actor receives an isolated RequestManager.
+- Positive proof requires both owner/reference and comparison actor to receive the protected configured value.
+- Integrates with the scanner's existing cross-actor verification evidence model.
 
-#### File-upload handling
+### Web Cache Deception
 
-- Requires `explicit_opt_in` on a disposable authorized upload endpoint.
-- Harmless static HTML marker only; no JavaScript, executable file, polyglot or persistence payload.
-- Maximum one upload plus one same-origin retrieval request.
-- Reports only when the marker is served inline as `text/html`; safe fixture serves as download/octet-stream.
+- `web_cache_deception_verification` uses an explicitly configured deceptive URL and private marker.
+- A unique query parameter isolates the cache key.
+- Proof requires authenticated private content followed by the same content on an isolated anonymous replay with a cache-hit signal.
+- The anonymous replay uses a separate RequestManager so ambient session cookies cannot leak between identities.
 
-#### Cache poisoning / cache-key confusion
+### HTTP request smuggling / desynchronization research lab
 
-- Requires `explicit_opt_in` on a known-safe cacheable URL.
-- Uses a unique query key and reserved `.invalid` `X-Forwarded-Host` canary to isolate test state.
-- Two GETs only; proof requires the second request to replay the canary without the header.
-- No executable content or shared generic cache key is used.
+- A local-only parser-boundary differential harness now exists in `tests/corpus/http_desync_lab.py`.
+- Positive fixture contains a single HTTP/1 request and an inert trailing byte; it proves only that two toy framing policies disagree on the message boundary.
+- Negative fixture has matching Content-Length/chunked boundaries.
+- There is intentionally **no active production-target dispatcher**, second request, proxy poisoning, victim request, or external-host support.
+- Moving this beyond research requires a dedicated local proxy/origin harness plus a separate safety and false-positive review.
 
-## Next detector families
+## Architecture hardening discovered during this wave
 
-### LDAP / XPath injection
-Build only after a local directory/XML-query fixture exists. Proof should demonstrate unintended synthetic query semantics without destructive or privilege-changing actions.
+Cross-actor and anonymous verification uncovered an important session-isolation issue: `requests.Session` can retain configured cookies/headers even when an individual call passes an empty cookie dictionary. `core/requester_variants.py` now creates ephemeral RequestManager instances with replaced auth material while preserving scope, retry, timeout, concurrency and event-bus policy. WebSocket, GraphQL authorization and Web Cache Deception use these isolated requesters.
 
-### JWT server-side validation harness
-The current JWT layer is offline posture only. A future synthetic issuer/resource-server harness can validate signature enforcement, key selection, issuer/audience binding and token confusion without attacks against real credentials.
+## Remaining research-heavy families
 
-### OAuth/OIDC synthetic provider expansion
-Add nonce, response-mode, code-use, PKCE verifier and issuer mix-up fixtures using a fully synthetic authorization server/client pair before considering stronger claims.
-
-### WebSocket authorization
-Requires authenticated local channel fixtures and deterministic cross-actor policy expectations.
-
-### GraphQL authorization depth
-Build on the existing schema/auth harness with synthetic object ownership and field-level authorization expectations.
-
-### HTTP request smuggling/desynchronization
-Research-heavy: requires a purpose-built local proxy/origin harness, raw-protocol isolation and strict request/time bounds. Do not probe arbitrary production proxy chains by default.
-
-### Race-condition/business-logic checks
-Only with synthetic idempotent state transitions, bounded concurrency and rollback/reset support.
-
-### Web cache deception
-Requires deterministic local proxy/cache fixtures distinct from the implemented unkeyed-header cache-poisoning proof.
-
-### Prototype pollution
-Relevant only when a controlled JavaScript execution path and reliable positive/negative fixtures can prove a concrete effect safely.
+- Race-condition/business-logic checks with synthetic idempotent transitions and rollback/reset support.
+- Prototype pollution only when a controlled JavaScript execution path proves a concrete effect safely.
+- Deeper WebSocket per-message/channel authorization after a synthetic frame-level policy harness exists.
+- Deeper GraphQL mutations/subscription authorization only with explicit non-destructive local schemas.
+- HTTP desynchronization beyond parser research only after a purpose-built local reverse-proxy/origin harness is available.
 
 ## Promotion rule
 
