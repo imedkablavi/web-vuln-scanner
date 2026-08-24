@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List, Tuple
 
 from core.models import Finding
+from core.requester_variants import requester_with_ephemeral_auth
 
 
 class GraphQLAuthorizationVerifier:
@@ -75,6 +76,7 @@ class GraphQLAuthorizationVerifier:
                     "baseline_actor_ready": True,
                     "comparison_actor_ready": True,
                     "header_values_recorded": False,
+                    "requesters_isolated": True,
                 },
             },
             remediation=(
@@ -86,6 +88,7 @@ class GraphQLAuthorizationVerifier:
                 "query_source": "explicit-config",
                 "actor_headers_source": "environment-variables",
                 "header_values_recorded": False,
+                "actor_requesters_isolated": True,
             },
             verification_status="verified",
             scanner_mode="cross-actor-bounded",
@@ -109,15 +112,12 @@ class GraphQLAuthorizationVerifier:
         return [finding], self._meta()
 
     def _request(self, actor_headers: Dict[str, str], label: str):
-        default_auth_headers = dict(self.requester.config.get("auth", {}).get("headers", {}) or {})
-        headers = {name: "" for name in default_auth_headers}
-        headers.update(actor_headers)
-        headers["X-Scanner-Probe"] = label
-        return self.requester.send(
+        actor_requester = requester_with_ephemeral_auth(self.requester, headers=actor_headers, cookies={})
+        return actor_requester.send(
             "POST",
             self.endpoint_url,
             json={"query": self.query, "variables": self.variables},
-            headers=headers,
+            headers={"X-Scanner-Probe": label},
             cookies={},
             timeout=self.timeout,
             source="graphql_authorization_verification",
@@ -156,6 +156,7 @@ class GraphQLAuthorizationVerifier:
             "explicit_opt_in": self.explicit_opt_in,
             "max_requests": 2,
             "actor_header_values_persisted": False,
+            "actor_requesters_isolated": True,
             "errors": self.errors,
             "skipped": [skipped] if skipped else [],
         }
