@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from core.models import Finding
+from core.requester_variants import requester_with_ephemeral_auth
 
 
 class WebCacheDeceptionVerifier:
@@ -43,7 +44,7 @@ class WebCacheDeceptionVerifier:
             return [], self._meta("Web cache deception verification requires configured authorized auth material.")
 
         isolated_url = self._isolated_url(self.url)
-        anonymous_headers = {name: "" for name in auth_headers}
+        anonymous_requester = requester_with_ephemeral_auth(self.requester)
         try:
             baseline = self.requester.send(
                 "GET",
@@ -53,10 +54,10 @@ class WebCacheDeceptionVerifier:
                 timeout=self.timeout,
                 source="web_cache_deception_verification",
             )
-            anonymous = self.requester.send(
+            anonymous = anonymous_requester.send(
                 "GET",
                 isolated_url,
-                headers={**anonymous_headers, "X-Scanner-Probe": "wcd-anonymous-replay"},
+                headers={"X-Scanner-Probe": "wcd-anonymous-replay"},
                 cookies={},
                 timeout=self.timeout,
                 source="web_cache_deception_verification",
@@ -87,6 +88,7 @@ class WebCacheDeceptionVerifier:
                 "unique_cache_key_used": True,
                 "private_marker_recorded": False,
                 "auth_values_recorded": False,
+                "anonymous_requester_isolated": True,
             },
             remediation=(
                 "Do not cache authenticated/private responses at shared-cacheable paths. Key caches on authorization state "
@@ -97,6 +99,7 @@ class WebCacheDeceptionVerifier:
                 "unique_query_isolation": True,
                 "marker_value_recorded": False,
                 "auth_values_recorded": False,
+                "anonymous_requester_isolated": True,
             },
             verification_status="verified",
             scanner_mode="active-explicit-opt-in",
@@ -120,6 +123,7 @@ class WebCacheDeceptionVerifier:
             "unique_cache_key": True,
             "private_marker_persisted": False,
             "auth_values_persisted": False,
+            "isolated_anonymous_requester": True,
             "errors": self.errors,
             "skipped": [skipped] if skipped else [],
         }
