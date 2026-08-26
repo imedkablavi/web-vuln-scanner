@@ -127,16 +127,16 @@ web-vuln-profile full-authorized --config config/default_config.yaml --output co
 
 Available profiles:
 
-- `passive` — crawler plus passive/posture layers; active plugins disabled.
-- `safe-active` — enables stable bounded SQLi and business-logic checks; experimental plugins stay disabled.
-- `full-authorized` — browser-capable authorized baseline with stable plugins; credentials/workflows are still explicitly configured by the operator.
+- `passive` - crawler plus passive/posture layers; active plugins disabled.
+- `safe-active` - enables stable bounded SQLi and business-logic checks; experimental plugins stay disabled.
+- `full-authorized` - browser-capable authorized baseline with stable plugins; credentials/workflows are still explicitly configured by the operator.
 
 ## Reports
 
 A scan produces:
 
-- `scan_report.json` — complete machine-readable report.
-- `scan_report.html` — human-readable evidence report.
+- `scan_report.json` - complete machine-readable report.
+- `scan_report.html` - human-readable evidence report.
 
 Convert JSON to SARIF 2.1.0:
 
@@ -172,10 +172,10 @@ Experimental code must pass dedicated positive/negative tests and verification-q
 
 ## Exit Codes
 
-- `0` — no reportable findings.
-- `1` — findings were produced.
-- `2` — runtime or configuration failure.
-- `3` — partial or aborted run.
+- `0` - no reportable findings.
+- `1` - findings were produced.
+- `2` - runtime or configuration failure.
+- `3` - partial or aborted run.
 
 ## Tests
 
