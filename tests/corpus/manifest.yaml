@@ -1,0 +1,341 @@
+version: 4
+target: smoke/mock_server.py
+additional_targets:
+  - tests/corpus/additional_vuln_server.py
+  - tests/corpus/advanced_vuln_server.py
+  - tests/corpus/http_desync_lab.py
+network_policy: local-only
+cases:
+  - id: sqli-error-positive
+    path: /sqli?id=1
+    classification: intentionally-vulnerable
+    plugin: sqli
+    expected: detected
+  - id: stable-query-negative
+    path: /clean?id=1
+    classification: intentionally-safe
+    plugin: sqli
+    expected: no-finding
+  - id: cookie-auth-positive
+    path: /dashboard
+    classification: authenticated-session
+    credential: static-local-cookie
+    expected_status: 200
+  - id: cookie-auth-negative
+    path: /dashboard
+    classification: unauthenticated
+    expected_status: 401
+  - id: protected-idor-negative
+    path: /idor_protected?doc=2
+    classification: intentionally-safe
+    plugin: business_logic
+    expected: access-denied
+  - id: auth-bypass-positive
+    path: /auth_bypass?doc=1
+    classification: intentionally-vulnerable
+    plugin: business_logic
+    expected: cross-actor-signal
+  - id: ssti-expression-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssti?template=hello
+    classification: intentionally-vulnerable
+    plugin: ssti
+    expected: verified
+  - id: ssti-expression-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssti-safe?template=hello
+    classification: intentionally-safe
+    plugin: ssti
+    expected: no-finding
+  - id: crlf-header-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /crlf?next=/home
+    classification: intentionally-vulnerable
+    plugin: crlf_injection
+    expected: verified
+  - id: crlf-header-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /crlf-safe?next=/home
+    classification: intentionally-safe
+    plugin: crlf_injection
+    expected: no-finding
+  - id: ssrf-callback-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssrf?url=callback
+    classification: intentionally-vulnerable
+    plugin: ssrf
+    expected: verified-callback-proof
+  - id: ssrf-callback-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /ssrf-safe?url=callback
+    classification: intentionally-safe
+    plugin: ssrf
+    expected: no-finding
+  - id: host-header-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /host-header
+    classification: intentionally-vulnerable
+    plugin: host_header
+    expected: verified-security-sensitive-url
+  - id: host-header-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /host-header-safe
+    classification: intentionally-safe
+    plugin: host_header
+    expected: no-finding
+  - id: cors-arbitrary-origin-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /cors-vuln
+    classification: intentionally-vulnerable
+    plugin: cors_verification
+    expected: verified-two-origin-reflection
+  - id: cors-allowlist-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /cors-safe
+    classification: intentionally-safe
+    plugin: cors_verification
+    expected: no-finding
+  - id: graphql-debug-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /graphql-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: graphql_verification
+    expected: verified-debug-disclosure
+  - id: graphql-debug-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /graphql-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: graphql_verification
+    expected: no-debug-finding
+  - id: dom-xss-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /dom-xss
+    classification: intentionally-vulnerable
+    plugin: dom_xss_verification
+    expected: verified-browser-execution
+  - id: dom-xss-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /dom-xss-safe
+    classification: intentionally-safe
+    plugin: dom_xss_verification
+    expected: no-finding
+  - id: xxe-controlled-entity-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /xxe-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: xxe_verification
+    expected: verified-controlled-callback
+  - id: xxe-doctype-disabled-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /xxe-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: xxe_verification
+    expected: no-finding
+  - id: csrf-tokenless-cross-site-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /csrf-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: csrf_verification
+    expected: verified-request-integrity
+  - id: csrf-token-enforced-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /csrf-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: csrf_verification
+    expected: no-finding
+  - id: nosql-eq-operator-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /nosql-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: nosql_verification
+    expected: verified-operator-semantics
+  - id: nosql-scalar-schema-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /nosql-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: nosql_verification
+    expected: no-finding
+  - id: oidc-pkce-plain-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /oidc-vuln/.well-known/openid-configuration
+    classification: intentionally-vulnerable
+    plugin: oidc_verification
+    expected: s256-not-advertised
+  - id: oidc-pkce-s256-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /oidc-safe/.well-known/openid-configuration
+    classification: intentionally-safe
+    plugin: oidc_verification
+    expected: no-finding
+  - id: oauth-redirect-binding-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /oauth-vuln/authorize
+    classification: intentionally-vulnerable
+    plugin: oauth_flow_verification
+    expected: verified-invalid-redirect-accepted
+  - id: oauth-redirect-binding-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /oauth-safe/authorize
+    classification: intentionally-safe
+    plugin: oauth_flow_verification
+    expected: no-finding
+  - id: upload-inline-html-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /upload-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: file_upload_verification
+    expected: verified-inline-active-content
+  - id: upload-download-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /upload-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: file_upload_verification
+    expected: no-finding
+  - id: cache-unkeyed-forwarded-host-positive
+    target: tests/corpus/additional_vuln_server.py
+    path: /cache-vuln
+    classification: intentionally-vulnerable
+    plugin: cache_poisoning_verification
+    expected: verified-canary-replay
+  - id: cache-canonical-negative
+    target: tests/corpus/additional_vuln_server.py
+    path: /cache-safe
+    classification: intentionally-safe
+    plugin: cache_poisoning_verification
+    expected: no-finding
+  - id: jwt-offline-policy-positive
+    target: tests/test_extended_detectors.py
+    path: synthetic-jwt-env
+    classification: intentionally-vulnerable
+    plugin: jwt_validation
+    expected: detected-policy-violations
+  - id: jwt-offline-policy-negative
+    target: tests/test_extended_detectors.py
+    path: synthetic-jwt-env
+    classification: intentionally-safe
+    plugin: jwt_validation
+    expected: no-finding
+  - id: ldap-query-semantics-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ldap-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: directory_query_verification
+    expected: verified-ldap-query-semantics
+  - id: ldap-query-semantics-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ldap-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: directory_query_verification
+    expected: no-finding
+  - id: xpath-query-semantics-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /xpath-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: directory_query_verification
+    expected: verified-xpath-query-semantics
+  - id: xpath-query-semantics-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /xpath-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: directory_query_verification
+    expected: no-finding
+  - id: jwt-server-invalid-token-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /jwt-server-vuln
+    classification: intentionally-vulnerable
+    plugin: jwt_server_validation
+    expected: verified-invalid-token-accepted
+  - id: jwt-server-invalid-token-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /jwt-server-safe
+    classification: intentionally-safe
+    plugin: jwt_server_validation
+    expected: no-finding
+  - id: oauth-code-flow-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /oauth-code-vuln/authorize
+    classification: intentionally-vulnerable
+    plugin: oauth_code_flow_verification
+    expected: verified-pkce-nonce-code-reuse-signals
+  - id: oauth-code-flow-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /oauth-code-safe/authorize
+    classification: intentionally-safe
+    plugin: oauth_code_flow_verification
+    expected: no-finding
+  - id: websocket-handshake-auth-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ws-vuln
+    classification: intentionally-vulnerable
+    plugin: websocket_auth_verification
+    expected: verified-anonymous-upgrade
+  - id: websocket-handshake-auth-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /ws-safe
+    classification: intentionally-safe
+    plugin: websocket_auth_verification
+    expected: no-finding
+  - id: graphql-cross-actor-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /graphql-auth-vuln
+    method: POST
+    classification: intentionally-vulnerable
+    plugin: graphql_authorization_verification
+    expected: verified-cross-actor-read
+  - id: graphql-cross-actor-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /graphql-auth-safe
+    method: POST
+    classification: intentionally-safe
+    plugin: graphql_authorization_verification
+    expected: no-finding
+  - id: web-cache-deception-positive
+    target: tests/corpus/advanced_vuln_server.py
+    path: /wcd-vuln/account.css
+    classification: intentionally-vulnerable
+    plugin: web_cache_deception_verification
+    expected: verified-anonymous-cache-replay
+  - id: web-cache-deception-negative
+    target: tests/corpus/advanced_vuln_server.py
+    path: /wcd-safe/account.css
+    classification: intentionally-safe
+    plugin: web_cache_deception_verification
+    expected: no-finding
+  - id: http-desync-parser-disagreement-positive
+    target: tests/corpus/http_desync_lab.py
+    path: synthetic_ambiguous_request
+    classification: research-positive
+    plugin: http_desync_research
+    expected: parser-boundary-disagreement
+  - id: http-desync-parser-disagreement-negative
+    target: tests/corpus/http_desync_lab.py
+    path: synthetic_normalized_request
+    classification: research-negative
+    plugin: http_desync_research
+    expected: no-disagreement
+notes:
+  - All automated corpus network traffic binds to 127.0.0.1 on ephemeral ports.
+  - Public CI never contacts public vulnerable targets, OAST services, OAuth/OIDC providers, directory services, WebSocket services, or shared caches.
+  - LDAP/XPath verification is two-request semantic proof only; no writes, enumeration loops, credential guessing, or broad payload lists.
+  - JWT server validation uses operator-supplied control and negative tokens from environment variables; it never forges, mutates, brute-forces, or persists raw tokens.
+  - OAuth code-flow verification is credential-free/public-client only, loopback-only by default, capped at five requests, and does not persist codes/tokens/nonces.
+  - WebSocket verification is handshake-only and sends zero WebSocket frames.
+  - GraphQL authorization uses two explicitly configured actors and isolated request sessions; actor header values are never persisted.
+  - Web cache deception uses an isolated unique query key and a separate anonymous RequestManager so ambient session cookies cannot leak into the replay.
+  - HTTP desync/request-smuggling work is research-only: the fixture contains one synthetic request plus an inert trailing byte, no follow-up request, no network dispatcher, and no external target support.
+  - New next-wave active verification layers are disabled by default and require explicit opt-in where they dispatch security-sensitive probes.
+  - Existing experimental plugin and earlier verification safety boundaries remain unchanged.

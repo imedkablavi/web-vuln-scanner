@@ -48,15 +48,19 @@ jobs:
 
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - run: |
+      - name: Install smoke dependencies
+        run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+      - name: Install local browser runtime
+        run: python -m playwright install --with-deps chromium
       - name: Local smoke target
         run: python smoke/run_smoke.py
       - name: Convert smoke report to SARIF

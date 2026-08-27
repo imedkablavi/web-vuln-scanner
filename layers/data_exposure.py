@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Tuple
 from urllib.parse import urljoin, urlparse
 
 from core.models import Finding
+from core.redaction import redact_text
 from core.utils import logger, normalize_url
 
 
@@ -73,7 +74,7 @@ class DataExposureScanner:
             response = self.requester.send("GET", url)
         except Exception as exc:
             logger.error(f"Data exposure probe failed for {url}: {exc}")
-            self.errors.append({"url": url, "error": str(exc)})
+            self.errors.append({"url": url, "error": redact_text(str(exc))})
             return None
         if response is None:
             return None
@@ -103,6 +104,7 @@ class DataExposureScanner:
             matched_kind = "debug_config"
         if not matched_kind:
             return []
+        safe_excerpt = redact_text(re.sub(r"\s+", " ", body).strip()[:240])
         return [
             Finding(
                 plugin="data_exposure",
@@ -117,7 +119,7 @@ class DataExposureScanner:
                     "matched_kind": matched_kind,
                     "path": snapshot["path"],
                     "content_type": snapshot["content_type"],
-                    "response_excerpt": re.sub(r"\s+", " ", body).strip()[:240],
+                    "response_excerpt": safe_excerpt,
                 },
                 remediation="Remove backup/debug artifacts from the web root and block direct access to configuration material.",
                 reproduction={"method": "GET", "url": snapshot["url"]},
@@ -136,7 +138,7 @@ class DataExposureScanner:
         for pattern, signal in SENSITIVE_PATTERNS:
             match = pattern.search(body)
             if match:
-                hits.append({"signal": signal, "excerpt": match.group(0)[:120]})
+                hits.append({"signal": signal, "excerpt": redact_text(match.group(0)[:120])})
         if not hits:
             return []
         return [

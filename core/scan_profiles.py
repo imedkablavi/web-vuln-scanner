@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+from importlib import resources
 from pathlib import Path
 from typing import Any, Dict
 
@@ -72,8 +73,19 @@ def apply_profile(config: Dict[str, Any], profile: str) -> Dict[str, Any]:
     return result
 
 
-def materialize_profile(config_path: str | Path, profile: str, output_path: str | Path) -> Path:
+def resolve_config_path(config_path: str | Path) -> Path:
     source = Path(config_path)
+    if source.exists():
+        return source
+    if str(config_path) == "config/default_config.yaml":
+        packaged = resources.files("config").joinpath("default_config.yaml")
+        if packaged.is_file():
+            return Path(str(packaged))
+    raise FileNotFoundError(f"Config file not found: {config_path}")
+
+
+def materialize_profile(config_path: str | Path, profile: str, output_path: str | Path) -> Path:
+    source = resolve_config_path(config_path)
     config = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     rendered = apply_profile(config, profile)
     destination = Path(output_path)
