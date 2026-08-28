@@ -120,3 +120,67 @@ def test_logger_falls_back_to_stream_when_file_handler_cannot_open(monkeypatch):
     monkeypatch.setattr("core.utils.logging.FileHandler", fail_file_handler)
     configured = setup_logger(log_file="/synthetic-read-only/scanner.log")
     assert configured.name == "WebVulnScanner"
+
+
+def test_config_redaction_mixed_case_and_nested():
+    """Ensure mixed-case keys and deeply nested dictionaries/lists redact secrets correctly while preserving safe keys."""
+    config = {
+        "authOrIzAtIoN": "Bearer fake-token-123",
+        "cOoKiE": "fake-cookie-456",
+        "nested_list": [
+            {"aPi_KeY": "fake-api-key-789"},
+            {"CsRf": "fake-csrf-token-abc"},
+            {"safe_field": "keep-me-intact"},
+        ],
+        "nested_dict": {
+            "level2": {
+                "SeCrEt": "fake-secret-xyz",
+                "normal_config": "enabled",
+                "port": 8080,
+            }
+        },
+        "unrelated": "normal-value",
+    }
+    redacted = sanitize_config(config)
+
+    # Assert secret/sensitive fields are redacted
+    assert redacted["authOrIzAtIoN"] == "***redacted***"
+    assert redacted["cOoKiE"] == "***redacted***"
+    assert redacted["nested_list"][0]["aPi_KeY"] == "***redacted***"
+    assert redacted["nested_list"][1]["CsRf"] == "***redacted***"
+    assert redacted["nested_dict"]["level2"]["SeCrEt"] == "***redacted***"
+
+    # Assert safe unrelated fields remain completely unchanged
+    assert redacted["nested_list"][2]["safe_field"] == "keep-me-intact"
+    assert redacted["nested_dict"]["level2"]["normal_config"] == "enabled"
+    assert redacted["nested_dict"]["level2"]["port"] == 8080
+    assert redacted["unrelated"] == "normal-value"
+
+
+def test_free_form_log_redaction_various_formats():
+    """Ensure free-form log strings containing bearer tokens, JWTs, and secret assignments are redacted properly."""
+    # Bearer tokens in logs (various formats/cases)
+    bearer_log = "DEBUG - Authorization header contains: Bearer abc_123-xyz.tuv~+"
+    redacted_bearer = redact_text(bearer_log)
+    assert "abc_123-xyz" not in redacted_bearer
+    assert "Bearer ***redacted***" in redacted_bearer
+
+    # JWT tokens in logs (various formats)
+    jwt_log = "ERROR - Found token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    redacted_jwt = redact_text(jwt_log)
+    assert "eyJhbGciOi" not in redacted_jwt
+    assert "***redacted-jwt***" in redacted_jwt
+
+    # Mixed-case assignments with spaces, colons, equals, etc.
+    assignments_log = "Passwd:  my-fake-password, Api_Key=my-fake-api-key, csrF=my-fake-csrf"
+    redacted_assignments = redact_text(assignments_log)
+    assert "my-fake-password" not in redacted_assignments
+    assert "my-fake-api-key" not in redacted_assignments
+    assert "my-fake-csrf" not in redacted_assignments
+    assert "Passwd:  ***redacted***" in redacted_assignments
+    assert "Api_Key=***redacted***" in redacted_assignments
+    assert "csrF=***redacted***" in redacted_assignments
+
+    # Unrelated log info remains unchanged
+    safe_log = "INFO - Task 543 completed successfully at host 192.168.1.1 on port 443"
+    assert redact_text(safe_log) == safe_log
