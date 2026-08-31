@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -93,3 +98,42 @@ def test_sarif_file_conversion(tmp_path):
     assert output.name == "scan_report.sarif"
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["runs"][0]["results"][0]["ruleId"].startswith("web-vuln-scanner/")
+
+
+def test_wheel_contents(tmp_path):
+    """Verify the wheel ships correct packages and excludes dev artifacts."""
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+
+    wheel_dir = tmp_path / "wheels"
+    wheel_dir.mkdir()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation", "-w", str(wheel_dir)],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"wheel build failed:\n{result.stderr}"
+
+    whl_files = list(wheel_dir.glob("*.whl"))
+    assert len(whl_files) == 1, f"expected 1 wheel, found {whl_files}"
+
+    with zipfile.ZipFile(whl_files[0]) as zf:
+        names = zf.namelist()
+
+        # Required packages and modules
+        for prefix in ("core/", "layers/", "plugins/", "workflows/", "main_v2.py"):
+            assert any(n.startswith(prefix) for n in names), f"{prefix} missing from wheel"
+
+        # CLI entry points
+        ep_files = [n for n in names if n.endswith("/entry_points.txt")]
+        assert len(ep_files) == 1, "entry_points.txt not found in dist-info"
+        ep_content = zf.read(ep_files[0]).decode()
+        for entry in ("web-vuln-scanner", "web-vuln-sarif", "web-vuln-profile"):
+            assert entry in ep_content, f"{entry} missing from entry_points.txt"
+
+        # Dev-only outputs must not ship
+        for prefix in ("reports/", "smoke_out/", "benchmark_out/", "tests/"):
+            assert not any(n.startswith(prefix) for n in names), f"{prefix} should not be in wheel"
